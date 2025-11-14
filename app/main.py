@@ -59,6 +59,7 @@ async def lifespan(app: FastAPI):
         redis_client = redis.from_url(settings.REDIS_URL)
         redis_client.ping()
         logger.info(f"Successfully connected to Redis: {mask_url_password(settings.REDIS_URL)}")
+        redis_client.close()
     except Exception as e:
         logger.warning(f"Could not connect to Redis on startup: {e}")
         logger.info("Application will continue, but Redis operations may fail")

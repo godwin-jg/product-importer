@@ -6,4 +6,5 @@ celery
 redis
 python-multipart
 pydantic-settings
+httpx
 

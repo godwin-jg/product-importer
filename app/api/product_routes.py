@@ -1,3 +1,5 @@
+import asyncio
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -7,23 +9,27 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.product import Product as ProductModel
 from app.schemas.product import Product, ProductCreate, ProductUpdate
+from app.services.webhook_service import trigger_webhooks_for_event
 
 router = APIRouter(prefix="/products", tags=["products"])
 
 
 @router.post("/", response_model=Product, status_code=201)
-def create_product(
+async def create_product(
     product: ProductCreate,
     db: Annotated[Session, Depends(get_db)]
 ):
     """Create a new product."""
-    # Check if SKU already exists
-    existing_product = db.query(ProductModel).filter(ProductModel.sku == product.sku).first()
+    # Normalize SKU to lowercase for case-insensitive uniqueness
+    normalized_sku = product.sku.lower().strip()
+    
+    # Check if SKU already exists (case-insensitive)
+    existing_product = db.query(ProductModel).filter(ProductModel.sku.ilike(normalized_sku)).first()
     if existing_product:
         raise HTTPException(status_code=400, detail="Product with this SKU already exists")
     
     db_product = ProductModel(
-        sku=product.sku,
+        sku=normalized_sku,
         name=product.name,
         description=product.description,
         active=True
@@ -31,6 +37,32 @@ def create_product(
     db.add(db_product)
     db.commit()
     db.refresh(db_product)
+    
+    # Trigger webhooks asynchronously (don't wait for them)
+    # Create a new session for webhook triggers to avoid session closure issues
+    from app.database import SessionLocal
+    payload = {
+        "event_type": "product.created",
+        "product": {
+            "id": db_product.id,
+            "sku": db_product.sku,
+            "name": db_product.name,
+            "description": db_product.description,
+            "active": db_product.active,
+            "created_at": db_product.created_at.isoformat() if db_product.created_at else None
+        },
+        "timestamp": db_product.created_at.isoformat() if db_product.created_at else None
+    }
+    
+    async def trigger_webhooks():
+        webhook_db = SessionLocal()
+        try:
+            await trigger_webhooks_for_event(webhook_db, "product.created", payload)
+        finally:
+            webhook_db.close()
+    
+    asyncio.create_task(trigger_webhooks())
+    
     return db_product
 
 
@@ -50,7 +82,8 @@ def list_products(
     # Apply filters
     filters = []
     if sku is not None:
-        filters.append(ProductModel.sku.ilike(f"%{sku}%"))
+        # Normalize SKU filter to lowercase for case-insensitive search
+        filters.append(ProductModel.sku.ilike(f"%{sku.lower().strip()}%"))
     if name is not None:
         filters.append(ProductModel.name.ilike(f"%{name}%"))
     if active is not None:
@@ -89,7 +122,7 @@ def get_product(
 
 
 @router.put("/{product_id}", response_model=Product)
-def update_product(
+async def update_product(
     product_id: int,
     product_update: ProductUpdate,
     db: Annotated[Session, Depends(get_db)]
@@ -99,14 +132,25 @@ def update_product(
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    # Check if SKU is being updated and if it already exists
-    if product_update.sku is not None and product_update.sku != db_product.sku:
-        existing_product = db.query(ProductModel).filter(
-            ProductModel.sku == product_update.sku
-        ).first()
-        if existing_product:
-            raise HTTPException(status_code=400, detail="Product with this SKU already exists")
-        db_product.sku = product_update.sku
+    # Store old values for webhook payload
+    old_values = {
+        "sku": db_product.sku,
+        "name": db_product.name,
+        "description": db_product.description,
+        "active": db_product.active
+    }
+    
+    # Check if SKU is being updated and if it already exists (case-insensitive)
+    if product_update.sku is not None:
+        normalized_sku = product_update.sku.lower().strip()
+        # Compare case-insensitively
+        if normalized_sku != db_product.sku.lower():
+            existing_product = db.query(ProductModel).filter(
+                ProductModel.sku.ilike(normalized_sku)
+            ).first()
+            if existing_product:
+                raise HTTPException(status_code=400, detail="Product with this SKU already exists")
+            db_product.sku = normalized_sku
     
     # Update other fields
     if product_update.name is not None:
@@ -118,11 +162,38 @@ def update_product(
     
     db.commit()
     db.refresh(db_product)
+    
+    # Trigger webhooks asynchronously (don't wait for them)
+    # Create a new session for webhook triggers to avoid session closure issues
+    from app.database import SessionLocal
+    payload = {
+        "event_type": "product.updated",
+        "product": {
+            "id": db_product.id,
+            "sku": db_product.sku,
+            "name": db_product.name,
+            "description": db_product.description,
+            "active": db_product.active,
+            "updated_at": db_product.updated_at.isoformat() if db_product.updated_at else None
+        },
+        "old_values": old_values,
+        "timestamp": db_product.updated_at.isoformat() if db_product.updated_at else None
+    }
+    
+    async def trigger_webhooks():
+        webhook_db = SessionLocal()
+        try:
+            await trigger_webhooks_for_event(webhook_db, "product.updated", payload)
+        finally:
+            webhook_db.close()
+    
+    asyncio.create_task(trigger_webhooks())
+    
     return db_product
 
 
 @router.delete("/{product_id}")
-def delete_product(
+async def delete_product(
     product_id: int,
     db: Annotated[Session, Depends(get_db)]
 ):
@@ -131,7 +202,35 @@ def delete_product(
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
     
+    # Store product data for webhook before deletion
+    product_data = {
+        "id": db_product.id,
+        "sku": db_product.sku,
+        "name": db_product.name,
+        "description": db_product.description,
+        "active": db_product.active
+    }
+    
     db.delete(db_product)
     db.commit()
+    
+    # Trigger webhooks asynchronously (don't wait for them)
+    # Create a new session for webhook triggers to avoid session closure issues
+    from app.database import SessionLocal
+    payload = {
+        "event_type": "product.deleted",
+        "product": product_data,
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    }
+    
+    async def trigger_webhooks():
+        webhook_db = SessionLocal()
+        try:
+            await trigger_webhooks_for_event(webhook_db, "product.deleted", payload)
+        finally:
+            webhook_db.close()
+    
+    asyncio.create_task(trigger_webhooks())
+    
     return {"ok": True}
 

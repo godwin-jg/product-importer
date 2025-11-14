@@ -314,6 +314,10 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         
         const eventSource = new EventSource(`/upload/progress/${jobId}`);
         
+        // Track last refresh time to avoid too frequent updates
+        let lastProductRefresh = 0;
+        const PRODUCT_REFRESH_INTERVAL = 3000; // Refresh product list every 3 seconds during upload
+        
         eventSource.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
@@ -329,14 +333,53 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
                     statusDiv.textContent = `Status: ${status}`;
                 }
                 
+                // Refresh product list periodically during upload to show newly added products
+                if (status === 'processing') {
+                    const now = Date.now();
+                    if (now - lastProductRefresh >= PRODUCT_REFRESH_INTERVAL) {
+                        fetchProducts();
+                        lastProductRefresh = now;
+                    }
+                }
+                
                 if (status === 'complete' || status === 'failed') {
                     eventSource.close();
                     
                     if (status === 'complete') {
                         statusDiv.textContent = 'Upload completed successfully!';
+                        // Final refresh to show all products
                         fetchProducts();
+                        // Clear file input
+                        fileInput.value = '';
+                        document.getElementById('file-name-display').style.display = 'none';
                     } else {
-                        statusDiv.textContent = `Upload failed: ${message || 'Unknown error'}`;
+                        statusDiv.innerHTML = `Upload failed: ${message || 'Unknown error'}<br><button id="retry-upload-btn" class="btn-primary" style="margin-top: 10px;">Retry Upload</button>`;
+                        // Store file for retry
+                        window.lastUploadFile = file;
+                        
+                        // Add retry button listener (remove old one first if exists)
+                        const oldRetryBtn = document.getElementById('retry-upload-btn');
+                        if (oldRetryBtn) {
+                            oldRetryBtn.replaceWith(oldRetryBtn.cloneNode(true));
+                        }
+                        const retryBtn = document.getElementById('retry-upload-btn');
+                        if (retryBtn) {
+                            retryBtn.addEventListener('click', async () => {
+                                if (window.lastUploadFile) {
+                                    // Create a new FileList-like object and set it to the input
+                                    const dataTransfer = new DataTransfer();
+                                    dataTransfer.items.add(window.lastUploadFile);
+                                    fileInput.files = dataTransfer.files;
+                                    
+                                    // Trigger upload again
+                                    const uploadForm = document.getElementById('upload-form');
+                                    const fakeEvent = new Event('submit', { bubbles: true, cancelable: true });
+                                    uploadForm.dispatchEvent(fakeEvent);
+                                } else {
+                                    alert('No file available to retry. Please select a new file.');
+                                }
+                            });
+                        }
                     }
                 }
             } catch (error) {
@@ -422,12 +465,20 @@ function populateWebhooksTable(webhooks) {
             <td>${webhook.event_type}</td>
             <td>${webhook.is_active ? 'Yes' : 'No'}</td>
             <td>
+                <button class="test-webhook-btn" data-id="${webhook.id}">Test</button>
+                <button class="edit-webhook-btn" data-id="${webhook.id}">Edit</button>
                 <button class="delete-webhook-btn" data-id="${webhook.id}">Delete</button>
             </td>
         `;
         tbody.appendChild(row);
     });
 
+    document.querySelectorAll('.test-webhook-btn').forEach(btn => {
+        btn.addEventListener('click', handleTestWebhook);
+    });
+    document.querySelectorAll('.edit-webhook-btn').forEach(btn => {
+        btn.addEventListener('click', handleEditWebhook);
+    });
     document.querySelectorAll('.delete-webhook-btn').forEach(btn => {
         btn.addEventListener('click', handleDeleteWebhook);
     });
@@ -456,17 +507,83 @@ async function handleDeleteWebhook(event) {
     }
 }
 
+async function handleEditWebhook(event) {
+    const webhookId = parseInt(event.target.getAttribute('data-id'));
+    
+    try {
+        const response = await fetch(`/webhooks/${webhookId}`);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const webhook = await response.json();
+        
+        // Populate form
+        document.getElementById('webhook-url').value = webhook.url;
+        document.getElementById('webhook-event-type').value = webhook.event_type;
+        document.getElementById('webhook-active').checked = webhook.is_active;
+        
+        editingWebhookId = webhookId;
+        document.getElementById('webhook-modal-title').textContent = 'Edit Webhook';
+        openModal('webhook-modal');
+    } catch (error) {
+        console.error('Error fetching webhook:', error);
+        alert('Failed to load webhook: ' + error.message);
+    }
+}
+
+async function handleTestWebhook(event) {
+    const webhookId = parseInt(event.target.getAttribute('data-id'));
+    const button = event.target;
+    const originalText = button.textContent;
+    
+    button.disabled = true;
+    button.textContent = 'Testing...';
+    
+    try {
+        const response = await fetch(`/webhooks/${webhookId}/test`, {
+            method: 'POST'
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        
+        let message = `Status: ${result.status_code || 'N/A'}\n`;
+        message += `Response Time: ${result.response_time_ms ? result.response_time_ms + 'ms' : 'N/A'}\n`;
+        message += `Message: ${result.message}`;
+        
+        if (result.success) {
+            alert(`✅ Webhook test successful!\n\n${message}`);
+        } else {
+            alert(`❌ Webhook test failed!\n\n${message}`);
+        }
+    } catch (error) {
+        console.error('Error testing webhook:', error);
+        alert('Failed to test webhook: ' + error.message);
+    } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+    }
+}
+
 document.getElementById('webhook-form').addEventListener('submit', async (e) => {
     e.preventDefault();
 
     const formData = {
         url: document.getElementById('webhook-url').value,
-        event_type: document.getElementById('webhook-event-type').value
+        event_type: document.getElementById('webhook-event-type').value,
+        is_active: document.getElementById('webhook-active').checked
     };
 
     try {
-        const response = await fetch('/webhooks/', {
-            method: 'POST',
+        const url = editingWebhookId ? `/webhooks/${editingWebhookId}` : '/webhooks/';
+        const method = editingWebhookId ? 'PUT' : 'POST';
+        
+        const response = await fetch(url, {
+            method: method,
             headers: {
                 'Content-Type': 'application/json'
             },
@@ -491,6 +608,7 @@ function resetWebhookForm() {
     document.getElementById('webhook-form').reset();
     document.getElementById('webhook-active').checked = true;
     editingWebhookId = null;
+    document.getElementById('webhook-modal-title').textContent = 'Add New Webhook';
 }
 
 document.getElementById('add-webhook-btn').addEventListener('click', () => {
