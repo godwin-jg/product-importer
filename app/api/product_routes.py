@@ -123,3 +123,13 @@ def delete_product(
     db.commit()
     return {"ok": True}
 
+
+@router.delete("/all")
+def delete_all_products(
+    db: Annotated[Session, Depends(get_db)]
+):
+    """Delete all products."""
+    db.query(ProductModel).delete()
+    db.commit()
+    return {"message": "All products deleted successfully", "ok": True}
+

@@ -257,8 +257,155 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
     }
 });
 
-// Load products on page load
+// Bulk Delete
+document.getElementById('delete-all-btn').addEventListener('click', async () => {
+    if (confirm('Are you sure? This cannot be undone.')) {
+        try {
+            const response = await fetch('/products/all', {
+                method: 'DELETE'
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+            }
+
+            alert('All products deleted successfully');
+            // Refresh products table
+            await fetchProducts();
+        } catch (error) {
+            console.error('Error deleting all products:', error);
+            alert('Failed to delete all products: ' + error.message);
+        }
+    }
+});
+
+// Webhook Management
+let editingWebhookId = null;
+
+// Fetch and display webhooks
+async function fetchWebhooks() {
+    try {
+        const response = await fetch('/webhooks/');
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const webhooks = await response.json();
+        populateWebhooksTable(webhooks);
+    } catch (error) {
+        console.error('Error fetching webhooks:', error);
+        alert('Failed to fetch webhooks: ' + error.message);
+    }
+}
+
+// Populate webhooks table
+function populateWebhooksTable(webhooks) {
+    const tbody = document.querySelector('#webhooks-table tbody');
+    tbody.innerHTML = '';
+
+    if (webhooks.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No webhooks found</td></tr>';
+        return;
+    }
+
+    webhooks.forEach(webhook => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>${webhook.id}</td>
+            <td>${webhook.url}</td>
+            <td>${webhook.event_type}</td>
+            <td>${webhook.is_active ? 'Yes' : 'No'}</td>
+            <td>
+                <button class="delete-webhook-btn" data-id="${webhook.id}">Delete</button>
+            </td>
+        `;
+        tbody.appendChild(row);
+    });
+
+    // Add event listeners to delete buttons
+    document.querySelectorAll('.delete-webhook-btn').forEach(btn => {
+        btn.addEventListener('click', handleDeleteWebhook);
+    });
+}
+
+// Handle delete webhook button click
+async function handleDeleteWebhook(event) {
+    const webhookId = parseInt(event.target.getAttribute('data-id'));
+    
+    if (!confirm(`Are you sure you want to delete webhook ${webhookId}?`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/webhooks/${webhookId}`, {
+            method: 'DELETE'
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        // Refresh webhooks table
+        await fetchWebhooks();
+    } catch (error) {
+        console.error('Error deleting webhook:', error);
+        alert('Failed to delete webhook: ' + error.message);
+    }
+}
+
+// Handle webhook form submission
+document.getElementById('webhook-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const formData = {
+        url: document.getElementById('webhook-url').value,
+        event_type: document.getElementById('webhook-event-type').value,
+        is_active: document.getElementById('webhook-active').checked
+    };
+
+    try {
+        const response = await fetch('/webhooks/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                url: formData.url,
+                event_type: formData.event_type
+            })
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+            throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+        }
+
+        // Reset form and refresh table
+        resetWebhookForm();
+        await fetchWebhooks();
+    } catch (error) {
+        console.error('Error saving webhook:', error);
+        alert('Failed to save webhook: ' + error.message);
+    }
+});
+
+// Handle cancel button
+document.getElementById('webhook-cancel-btn').addEventListener('click', () => {
+    resetWebhookForm();
+});
+
+// Reset webhook form
+function resetWebhookForm() {
+    document.getElementById('webhook-form').reset();
+    document.getElementById('webhook-active').checked = true;
+    editingWebhookId = null;
+    document.getElementById('webhook-submit-btn').textContent = 'Create Webhook';
+    document.getElementById('webhook-cancel-btn').style.display = 'none';
+}
+
+// Load products and webhooks on page load
 document.addEventListener('DOMContentLoaded', () => {
     fetchProducts();
+    fetchWebhooks();
 });
 
