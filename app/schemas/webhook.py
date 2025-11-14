@@ -31,7 +31,13 @@ class WebhookBase(BaseModel):
         if not v:
             raise ValueError("Event type cannot be empty")
         
-        valid_event_types = ("product.created", "product.updated", "product.deleted")
+        valid_event_types = (
+            "product.created", 
+            "product.updated", 
+            "product.deleted",
+            "import.complete",
+            "import.failed"
+        )
         if v not in valid_event_types:
             raise ValueError(f"Event type must be one of: {', '.join(valid_event_types)}")
         

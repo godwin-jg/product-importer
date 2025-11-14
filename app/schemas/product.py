@@ -28,3 +28,9 @@ class Product(ProductBase):
 
     model_config = {"from_attributes": True}
 
+
+class ProductListResponse(BaseModel):
+    """Response model for paginated product list."""
+    total: int
+    products: list[Product]
+

@@ -3,12 +3,12 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.product import Product as ProductModel
-from app.schemas.product import Product, ProductCreate, ProductUpdate
+from app.schemas.product import Product, ProductCreate, ProductUpdate, ProductListResponse
 from app.services.webhook_service import trigger_webhooks_for_event
 
 router = APIRouter(prefix="/products", tags=["products"])
@@ -20,26 +20,16 @@ async def create_product(
     db: Annotated[Session, Depends(get_db)]
 ):
     """Create a new product."""
-    # Normalize SKU to lowercase for case-insensitive uniqueness
     normalized_sku = product.sku.lower().strip()
-    
-    # Check if SKU already exists (case-insensitive)
     existing_product = db.query(ProductModel).filter(ProductModel.sku.ilike(normalized_sku)).first()
     if existing_product:
         raise HTTPException(status_code=400, detail="Product with this SKU already exists")
     
-    db_product = ProductModel(
-        sku=normalized_sku,
-        name=product.name,
-        description=product.description,
-        active=True
-    )
+    db_product = ProductModel(sku=normalized_sku, name=product.name, description=product.description, active=True)
     db.add(db_product)
     db.commit()
     db.refresh(db_product)
     
-    # Trigger webhooks asynchronously (don't wait for them)
-    # Create a new session for webhook triggers to avoid session closure issues
     from app.database import SessionLocal
     payload = {
         "event_type": "product.created",
@@ -62,41 +52,34 @@ async def create_product(
             webhook_db.close()
     
     asyncio.create_task(trigger_webhooks())
-    
     return db_product
 
 
-@router.get("/", response_model=list[Product])
+@router.get("/", response_model=ProductListResponse)
 def list_products(
     db: Annotated[Session, Depends(get_db)],
     skip: Annotated[int, Query(ge=0)] = 0,
-    limit: Annotated[int, Query(ge=1, le=100)] = 100,
-    sku: Annotated[str | None, Query()] = None,
-    name: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 10,
+    search: Annotated[str | None, Query()] = None,
     active: Annotated[bool | None, Query()] = None,
-    description: Annotated[str | None, Query()] = None,
 ):
-    """List products with pagination and filtering."""
+    """Get paginated and filtered products."""
     query = db.query(ProductModel)
     
-    # Apply filters
-    filters = []
-    if sku is not None:
-        # Normalize SKU filter to lowercase for case-insensitive search
-        filters.append(ProductModel.sku.ilike(f"%{sku.lower().strip()}%"))
-    if name is not None:
-        filters.append(ProductModel.name.ilike(f"%{name}%"))
+    if search:
+        search_term = f"%{search.lower().strip()}%"
+        query = query.filter(or_(
+            func.lower(ProductModel.sku).ilike(search_term),
+            func.lower(ProductModel.name).ilike(search_term)
+        ))
+    
     if active is not None:
-        filters.append(ProductModel.active == active)
-    if description is not None:
-        filters.append(ProductModel.description.ilike(f"%{description}%"))
+        query = query.filter(ProductModel.active == active)
     
-    if filters:
-        query = query.filter(and_(*filters))
-    
-    # Apply pagination
+    total_count = query.count()
     products = query.offset(skip).limit(limit).all()
-    return products
+    
+    return {"total": total_count, "products": products}
 
 
 @router.delete("/all")
@@ -132,7 +115,6 @@ async def update_product(
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    # Store old values for webhook payload
     old_values = {
         "sku": db_product.sku,
         "name": db_product.name,
@@ -140,19 +122,14 @@ async def update_product(
         "active": db_product.active
     }
     
-    # Check if SKU is being updated and if it already exists (case-insensitive)
     if product_update.sku is not None:
         normalized_sku = product_update.sku.lower().strip()
-        # Compare case-insensitively
         if normalized_sku != db_product.sku.lower():
-            existing_product = db.query(ProductModel).filter(
-                ProductModel.sku.ilike(normalized_sku)
-            ).first()
+            existing_product = db.query(ProductModel).filter(ProductModel.sku.ilike(normalized_sku)).first()
             if existing_product:
                 raise HTTPException(status_code=400, detail="Product with this SKU already exists")
             db_product.sku = normalized_sku
     
-    # Update other fields
     if product_update.name is not None:
         db_product.name = product_update.name
     if product_update.description is not None:
@@ -163,8 +140,6 @@ async def update_product(
     db.commit()
     db.refresh(db_product)
     
-    # Trigger webhooks asynchronously (don't wait for them)
-    # Create a new session for webhook triggers to avoid session closure issues
     from app.database import SessionLocal
     payload = {
         "event_type": "product.updated",
@@ -188,7 +163,6 @@ async def update_product(
             webhook_db.close()
     
     asyncio.create_task(trigger_webhooks())
-    
     return db_product
 
 
@@ -202,7 +176,6 @@ async def delete_product(
     if not db_product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    # Store product data for webhook before deletion
     product_data = {
         "id": db_product.id,
         "sku": db_product.sku,
@@ -214,8 +187,6 @@ async def delete_product(
     db.delete(db_product)
     db.commit()
     
-    # Trigger webhooks asynchronously (don't wait for them)
-    # Create a new session for webhook triggers to avoid session closure issues
     from app.database import SessionLocal
     payload = {
         "event_type": "product.deleted",
@@ -231,6 +202,5 @@ async def delete_product(
             webhook_db.close()
     
     asyncio.create_task(trigger_webhooks())
-    
     return {"ok": True}
 

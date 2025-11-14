@@ -1,12 +1,14 @@
 import csv
 import json
+import logging
 import ssl
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
 
 import redis
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.database import SessionLocal
@@ -14,337 +16,254 @@ from app.models.product import Product
 from app.services.webhook_service import trigger_webhooks_sync
 from app.worker import celery_app
 
+CHUNK_SIZE = 5000
+logger = logging.getLogger(__name__)
+
+
+def _count_total_rows(file_path: str) -> int:
+    """Count rows in CSV, skipping header."""
+    with open(file_path, 'r', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        next(reader)
+        return sum(1 for row in reader)
+
+
+def _process_chunk(db: Session, chunk: list[dict]):
+    """Process chunk using bulk query pattern. Handles duplicates within chunk."""
+    if not chunk:
+        return 0, 0
+    
+    # Deduplicate chunk: keep last occurrence of each SKU
+    seen_skus = {}
+    for row_data in chunk:
+        seen_skus[row_data['sku']] = row_data
+    deduplicated_chunk = list(seen_skus.values())
+    
+    products_created = 0
+    products_updated = 0
+    skus_in_chunk = [row['sku'] for row in deduplicated_chunk]
+    
+    existing_products = db.query(Product).filter(func.lower(Product.sku).in_(skus_in_chunk)).all()
+    existing_products_map = {p.sku.lower(): p for p in existing_products}
+    
+    for row_data in deduplicated_chunk:
+        sku = row_data['sku']
+        product = existing_products_map.get(sku)
+        
+        if product:
+            product.name = row_data['name']
+            product.description = row_data['description']
+            products_updated += 1
+        else:
+            db.add(Product(sku=sku, name=row_data['name'], description=row_data['description'], active=True))
+            products_created += 1
+    
+    return products_created, products_updated
+
 
 @celery_app.task(bind=True)
 def process_csv_import(self, file_path: str, job_id: str):
-    """
-    Process CSV import task.
-    Reads CSV file and imports products into the database.
-    Expected CSV format: SKU, Name, Description
-    Note: Active status is not part of CSV - new products default to active=True,
-    existing products retain their current active status.
-    """
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info(f"Starting CSV import task: job_id={job_id}, file_path={file_path}")
-    
-    # Create Redis client with SSL support if needed
-    redis_url_parsed = urlparse(settings.REDIS_URL)
-    is_ssl = redis_url_parsed.scheme == "rediss"
-    
-    redis_client = None
+    """Process CSV import with chunk-based processing."""
+    logger.info(f"Starting CSV import: job_id={job_id}, file_path={file_path}")
+
     try:
-        if is_ssl:
-            redis_client = redis.from_url(
-                settings.REDIS_URL,
-                ssl_cert_reqs=ssl.CERT_NONE
-            )
-        else:
-            redis_client = redis.from_url(settings.REDIS_URL)
+        redis_client = redis.from_url(
+            settings.REDIS_URL,
+            ssl_cert_reqs=ssl.CERT_NONE if "rediss" in settings.REDIS_URL else None,
+            decode_responses=True
+        )
     except Exception as e:
         logger.error(f"Failed to create Redis client: {e}")
         raise
-    
+
     redis_key = f"job:{job_id}"
     db = SessionLocal()
+    file_path_obj = Path(file_path)
     
+    if not file_path_obj.exists():
+        redis_client.set(redis_key, json.dumps({"status": "failed", "message": f"File not found: {file_path}", "progress": 0}))
+        return
+
+    total_created = total_updated = total_skipped = processed_count = 0
+    errors = []
+    last_progress = 0
+
     try:
-        logger.info(f"File exists check: {Path(file_path).exists()}")
-        # Update status to processing
-        redis_client.set(
-            redis_key,
-            json.dumps({
-                "status": "processing",
-                "message": "Reading CSV file...",
-                "progress": 10
-            })
-        )
-        
-        # Check if file exists
-        file_path_obj = Path(file_path)
-        if not file_path_obj.exists():
-            redis_client.set(
-                redis_key,
-                json.dumps({
-                    "status": "failed",
-                    "message": f"File not found: {file_path}",
-                    "progress": 0
-                })
-            )
+        total_rows = _count_total_rows(str(file_path_obj))
+        if total_rows == 0:
+            redis_client.set(redis_key, json.dumps({"status": "failed", "message": "CSV file is empty or has no data rows", "progress": 0}))
             return
-        
-        # Read and parse CSV
-        products_created = 0
-        products_updated = 0
-        products_skipped = 0
-        errors = []
-        
+
+        redis_client.set(redis_key, json.dumps({"status": "processing", "message": f"Reading {total_rows:,} rows...", "progress": 0}))
+
         with open(file_path_obj, 'r', encoding='utf-8') as csvfile:
-            # Detect delimiter
             sample = csvfile.read(1024)
             csvfile.seek(0)
-            sniffer = csv.Sniffer()
-            delimiter = sniffer.sniff(sample).delimiter
-            
+            delimiter = csv.Sniffer().sniff(sample).delimiter
             reader = csv.DictReader(csvfile, delimiter=delimiter)
+            chunk = []
             
-            # Get total rows for progress tracking
-            rows = list(reader)
-            total_rows = len(rows)
-            
-            if total_rows == 0:
-                redis_client.set(
-                    redis_key,
-                    json.dumps({
-                        "status": "failed",
-                        "message": "CSV file is empty or has no data rows",
-                        "progress": 0
-                    })
-                )
-                return
-            
-            # Process each row
-            for idx, row in enumerate(rows, 1):
+            for idx, row in enumerate(reader, 1):
                 try:
-                    # Normalize column names (case-insensitive, strip whitespace)
                     row_normalized = {k.strip().lower(): v.strip() if v else '' for k, v in row.items()}
-                    
-                    # Extract fields (try different column name variations)
-                    sku = row_normalized.get('sku', '').strip().lower()  # Normalize SKU to lowercase for case-insensitive comparison
+                    sku = row_normalized.get('sku', '').strip().lower()
                     name = row_normalized.get('name', '').strip()
                     description = row_normalized.get('description', '').strip() or None
                     
-                    # Validate required fields
                     if not sku or not name:
-                        products_skipped += 1
+                        total_skipped += 1
                         errors.append(f"Row {idx}: Missing SKU or Name")
                         continue
                     
-                    # Check if product with this SKU already exists (case-insensitive)
-                    # Use with_for_update() to prevent race conditions in multi-worker scenarios
-                    existing_product = db.query(Product).filter(Product.sku.ilike(sku)).first()
+                    chunk.append({"sku": sku, "name": name, "description": description})
                     
-                    was_update = False
-                    product_for_webhook = None
-                    
-                    if existing_product:
-                        # Update existing product (preserve active status - not in CSV)
-                        existing_product.name = name
-                        existing_product.description = description
-                        # Note: active status is NOT updated from CSV
-                        products_updated += 1
-                        was_update = True
-                        product_for_webhook = existing_product
-                    else:
-                        # Create new product (default to active=True)
-                        new_product = Product(
-                            sku=sku,
-                            name=name,
-                            description=description,
-                            active=True  # Default to active for new products
-                        )
-                        db.add(new_product)
-                        products_created += 1
-                        was_update = False
-                        product_for_webhook = new_product
-                    
-                    # Commit every 10 rows to avoid long transactions
-                    if idx % 10 == 0:
+                    if len(chunk) >= CHUNK_SIZE or idx == total_rows:
                         try:
+                            created, updated = _process_chunk(db, chunk)
                             db.commit()
-                            # Refresh product to get ID if it was newly created
-                            if product_for_webhook:
-                                if not was_update:
-                                    db.refresh(product_for_webhook)
-                                
-                                # Trigger webhooks for batch (non-blocking, fire and forget)
-                                try:
-                                    if was_update:
-                                        payload = {
-                                            "event_type": "product.updated",
-                                            "product": {
-                                                "id": product_for_webhook.id,
-                                                "sku": product_for_webhook.sku,
-                                                "name": product_for_webhook.name,
-                                                "description": product_for_webhook.description,
-                                                "active": product_for_webhook.active,
-                                                "updated_at": product_for_webhook.updated_at.isoformat() if product_for_webhook.updated_at else None
-                                            },
-                                            "timestamp": product_for_webhook.updated_at.isoformat() if product_for_webhook.updated_at else datetime.utcnow().isoformat() + "Z"
-                                        }
-                                        trigger_webhooks_sync(db, "product.updated", payload)
-                                    else:
-                                        payload = {
-                                            "event_type": "product.created",
-                                            "product": {
-                                                "id": product_for_webhook.id,
-                                                "sku": product_for_webhook.sku,
-                                                "name": product_for_webhook.name,
-                                                "description": product_for_webhook.description,
-                                                "active": product_for_webhook.active,
-                                                "created_at": product_for_webhook.created_at.isoformat() if product_for_webhook.created_at else None
-                                            },
-                                            "timestamp": product_for_webhook.created_at.isoformat() if product_for_webhook.created_at else datetime.utcnow().isoformat() + "Z"
-                                        }
-                                        trigger_webhooks_sync(db, "product.created", payload)
-                                except Exception as webhook_error:
-                                    # Don't fail the import if webhooks fail
-                                    logger.warning(f"Failed to trigger webhook for product {sku}: {webhook_error}")
-                        except IntegrityError:
-                            # If commit fails due to race condition, rollback and retry as update
-                            db.rollback()
-                            # Try to find and update the product (another worker may have created it)
-                            existing_product = db.query(Product).filter(Product.sku.ilike(sku)).first()
-                            if existing_product:
-                                existing_product.name = name
-                                existing_product.description = description
-                                db.commit()
-                                products_created -= 1
-                                products_updated += 1
-                            else:
-                                # Still can't find it, skip this row
-                                products_created -= 1
-                                products_skipped += 1
-                                errors.append(f"Row {idx}: Could not create or update product with SKU {sku}")
-                        
-                        # Update progress (always update, even if commit had issues)
-                        progress = 10 + int((idx / total_rows) * 80)
-                        try:
-                            redis_client.set(
-                                redis_key,
-                                json.dumps({
-                                    "status": "processing",
-                                    "message": f"Processing row {idx} of {total_rows}...",
-                                    "progress": progress
-                                })
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to update Redis progress: {e}")
-                    
-                    # Also update progress more frequently for small files (every row if < 100 rows)
-                    elif total_rows < 100 and idx % 5 == 0:
-                        progress = 10 + int((idx / total_rows) * 80)
-                        try:
-                            redis_client.set(
-                                redis_key,
-                                json.dumps({
-                                    "status": "processing",
-                                    "message": f"Processing row {idx} of {total_rows}...",
-                                    "progress": progress
-                                })
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to update Redis progress: {e}")
-                
-                except IntegrityError as e:
-                    # Handle race condition: another worker may have created this SKU
-                    db.rollback()
-                    try:
-                        # Try to update instead (case-insensitive lookup)
-                        existing_product = db.query(Product).filter(Product.sku.ilike(sku)).first()
-                        if existing_product:
-                            existing_product.name = name
-                            existing_product.description = description
-                            db.commit()
-                            products_updated += 1
+                            total_created += created
+                            total_updated += updated
+                            processed_count += len(chunk)
+                            chunk = []
                             
-                            # Trigger webhook for updated product
-                            try:
-                                db.refresh(existing_product)
-                                payload = {
-                                    "event_type": "product.updated",
-                                    "product": {
-                                        "id": existing_product.id,
-                                        "sku": existing_product.sku,
-                                        "name": existing_product.name,
-                                        "description": existing_product.description,
-                                        "active": existing_product.active,
-                                        "updated_at": existing_product.updated_at.isoformat() if existing_product.updated_at else None
-                                    },
-                                    "timestamp": existing_product.updated_at.isoformat() if existing_product.updated_at else datetime.utcnow().isoformat() + "Z"
-                                }
-                                trigger_webhooks_sync(db, "product.updated", payload)
-                            except Exception as webhook_error:
-                                logger.warning(f"Failed to trigger webhook for product {sku}: {webhook_error}")
-                        else:
-                            products_skipped += 1
-                            errors.append(f"Row {idx}: Duplicate SKU - {str(e)}")
-                    except Exception as update_error:
-                        db.rollback()
-                        products_skipped += 1
-                        errors.append(f"Row {idx}: Error handling duplicate SKU - {str(update_error)}")
-                    continue
+                            progress_float = (processed_count / total_rows) * 90
+                            calculated_progress = min(90, int(round(progress_float)))
+                            progress = min(90, last_progress + 1) if calculated_progress <= last_progress else calculated_progress
+                            last_progress = progress
+                            
+                            should_update = (
+                                (total_rows >= 100000 and (processed_count % 10000 == 0)) or
+                                (total_rows >= 10000 and (processed_count % 1000 == 0)) or
+                                (total_rows >= 100 and (processed_count % 100 == 0)) or
+                                total_rows < 100 or idx == total_rows
+                            )
+                            
+                            if should_update:
+                                redis_client.set(redis_key, json.dumps({
+                                    "status": "processing",
+                                    "message": f"Processing row {processed_count:,} of {total_rows:,}...",
+                                    "progress": progress
+                                }))
+                        except IntegrityError as e:
+                            db.rollback()
+                            # Process items individually to handle race conditions
+                            chunk_start = idx - len(chunk) + 1
+                            individual_created = 0
+                            individual_updated = 0
+                            individual_skipped = 0
+                            
+                            for row_idx, row_data in enumerate(chunk):
+                                try:
+                                    existing = db.query(Product).filter(func.lower(Product.sku) == row_data['sku']).first()
+                                    if existing:
+                                        existing.name = row_data['name']
+                                        existing.description = row_data['description']
+                                        db.commit()
+                                        individual_updated += 1
+                                    else:
+                                        db.add(Product(sku=row_data['sku'], name=row_data['name'], description=row_data['description'], active=True))
+                                        db.commit()
+                                        individual_created += 1
+                                except IntegrityError:
+                                    db.rollback()
+                                    # SKU exists now, update it
+                                    existing = db.query(Product).filter(func.lower(Product.sku) == row_data['sku']).first()
+                                    if existing:
+                                        existing.name = row_data['name']
+                                        existing.description = row_data['description']
+                                        db.commit()
+                                        individual_updated += 1
+                                    else:
+                                        individual_skipped += 1
+                                        errors.append(f"Row {chunk_start + row_idx}: Could not process SKU {row_data['sku']}")
+                                except Exception as row_e:
+                                    db.rollback()
+                                    individual_skipped += 1
+                                    errors.append(f"Row {chunk_start + row_idx}: Error - {str(row_e)}")
+                            
+                            total_created += individual_created
+                            total_updated += individual_updated
+                            total_skipped += individual_skipped
+                            processed_count += len(chunk)
+                            chunk = []
+                            
+                            if individual_skipped > 0:
+                                logger.warning(f"IntegrityError on chunk, processed individually: {individual_skipped} skipped")
+                        except Exception as e:
+                            db.rollback()
+                            chunk_start = idx - len(chunk) + 1
+                            total_skipped += len(chunk)
+                            chunk = []
+                            errors.append(f"Rows {chunk_start}-{idx}: Error processing chunk - {str(e)}")
+                            logger.error(f"Error processing chunk: {e}")
                 except Exception as e:
-                    products_skipped += 1
+                    total_skipped += 1
                     errors.append(f"Row {idx}: Error - {str(e)}")
+                    logger.warning(f"Error processing row {idx}: {e}")
                     continue
-            
-            # Final commit for any remaining uncommitted rows
-            try:
-                db.commit()
-            except IntegrityError:
-                # Handle any remaining race conditions in the final batch
-                db.rollback()
-                # Re-query and update any products that failed due to race conditions
-                # This is a best-effort attempt for the remaining rows
-                logger.warning("Some rows in final batch had integrity errors, attempting recovery")
-                # Note: Individual row errors are already tracked, so we just commit what we can
-                try:
-                    db.commit()
-                except:
-                    db.rollback()
-            
-            # Build success message
-            message_parts = []
-            if products_created > 0:
-                message_parts.append(f"{products_created} created")
-            if products_updated > 0:
-                message_parts.append(f"{products_updated} updated")
-            if products_skipped > 0:
-                message_parts.append(f"{products_skipped} skipped")
-            
-            message = f"Import complete: {', '.join(message_parts)}"
-            if errors:
-                message += f" ({len(errors)} errors)"
-            
-            # Complete the job
-            redis_client.set(
-                redis_key,
-                json.dumps({
-                    "status": "complete",
-                    "message": message,
-                    "progress": 100,
-                    "created": products_created,
-                    "updated": products_updated,
-                    "skipped": products_skipped
-                })
-            )
         
-        # Clean up temporary file
-        if file_path_obj.exists():
-            file_path_obj.unlink()
+        redis_client.set(redis_key, json.dumps({
+            "status": "processing",
+            "message": f"Finalizing import... ({total_rows:,} rows processed)",
+            "progress": 95
+        }))
+        
+        message_parts = []
+        if total_created > 0:
+            message_parts.append(f"{total_created:,} created")
+        if total_updated > 0:
+            message_parts.append(f"{total_updated:,} updated")
+        if total_skipped > 0:
+            message_parts.append(f"{total_skipped:,} skipped")
+        
+        message = f"Import complete: {', '.join(message_parts) or 'No changes'}"
+        if errors:
+            message += f" ({len(errors)} errors)"
+
+        final_payload = {
+            "status": "complete",
+            "message": message,
+            "progress": 100,
+            "created": total_created,
+            "updated": total_updated,
+            "skipped": total_skipped,
+            "total_rows": total_rows
+        }
+        redis_client.set(redis_key, json.dumps(final_payload))
+        
+        try:
+            trigger_webhooks_sync(db, "import.complete", {
+                "event_type": "import.complete",
+                "job_id": job_id,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "data": final_payload
+            })
+        except Exception as e:
+            logger.warning(f"Failed to trigger 'import.complete' webhook: {e}")
             
     except Exception as e:
         db.rollback()
-        # Update status to failed
-        redis_client.set(
-            redis_key,
-            json.dumps({
-                "status": "failed",
-                "message": f"Error processing CSV: {str(e)}",
-                "progress": 0
+        logger.error(f"Fatal error processing CSV: {e}", exc_info=True)
+        fail_payload = {"status": "failed", "message": f"Fatal error: {str(e)}", "progress": 0}
+        redis_client.set(redis_key, json.dumps(fail_payload))
+        
+        try:
+            trigger_webhooks_sync(db, "import.failed", {
+                "event_type": "import.failed",
+                "job_id": job_id,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "data": fail_payload
             })
-        )
+        except Exception as e_wh:
+            logger.warning(f"Failed to trigger 'import.failed' webhook: {e_wh}")
         
-        # Clean up temporary file on error
-        file_path_obj = Path(file_path)
-        if file_path_obj.exists():
-            file_path_obj.unlink()
-        
-        raise
     finally:
+        if file_path_obj.exists():
+            try:
+                file_path_obj.unlink()
+            except Exception as e:
+                logger.error(f"Failed to delete temp file: {e}")
         db.close()
-        # Close Redis connection
         if redis_client:
             try:
                 redis_client.close()

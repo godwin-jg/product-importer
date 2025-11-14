@@ -61,7 +61,6 @@ def update_webhook(
     if not db_webhook:
         raise HTTPException(status_code=404, detail="Webhook not found")
     
-    # Update fields
     if webhook_update.url is not None:
         db_webhook.url = webhook_update.url
     if webhook_update.event_type is not None:
@@ -83,29 +82,16 @@ async def test_webhook(
     webhook = db.query(WebhookModel).filter(WebhookModel.id == webhook_id).first()
     if not webhook:
         raise HTTPException(status_code=404, detail="Webhook not found")
-    
     if not webhook.is_active:
         raise HTTPException(status_code=400, detail="Webhook is not active")
     
-    # Prepare test payload
-    test_payload = {
-        "event_type": webhook.event_type,
-        "event": "test",
-        "message": "This is a test webhook trigger",
-        "timestamp": "2024-01-01T00:00:00Z"
-    }
+    test_payload = {"event_type": webhook.event_type, "event": "test", "message": "This is a test webhook trigger", "timestamp": "2024-01-01T00:00:00Z"}
     
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             start_time = time.time()
-            response = await client.post(
-                webhook.url,
-                json=test_payload,
-                headers={"Content-Type": "application/json"}
-            )
-            end_time = time.time()
-            response_time_ms = int((end_time - start_time) * 1000)
-            
+            response = await client.post(webhook.url, json=test_payload, headers={"Content-Type": "application/json"})
+            response_time_ms = int((time.time() - start_time) * 1000)
             return {
                 "success": response.status_code < 400,
                 "status_code": response.status_code,
@@ -114,21 +100,9 @@ async def test_webhook(
                 "message": f"Webhook responded with status {response.status_code}"
             }
     except httpx.TimeoutException:
-        return {
-            "success": False,
-            "status_code": None,
-            "response_time_ms": None,
-            "response_body": None,
-            "message": "Webhook request timed out after 10 seconds"
-        }
+        return {"success": False, "status_code": None, "response_time_ms": None, "response_body": None, "message": "Webhook request timed out after 10 seconds"}
     except Exception as e:
-        return {
-            "success": False,
-            "status_code": None,
-            "response_time_ms": None,
-            "response_body": None,
-            "message": f"Error testing webhook: {str(e)}"
-        }
+        return {"success": False, "status_code": None, "response_time_ms": None, "response_body": None, "message": f"Error testing webhook: {str(e)}"}
 
 
 @router.delete("/{webhook_id}")

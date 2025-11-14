@@ -1,57 +1,38 @@
 import ssl
-from urllib.parse import urlparse
 
 from celery import Celery
 
 from app.core.config import settings
 
-# Parse Redis URL to check if SSL is required
-redis_url_parsed = urlparse(settings.REDIS_URL)
-is_ssl = redis_url_parsed.scheme == "rediss"
-
-# Configure broker and backend URLs
-broker_url = settings.REDIS_URL
-backend_url = settings.REDIS_URL
-
-# Create Celery app instance
 celery_app = Celery("product_importer")
 
-# Configure Celery
 celery_app.conf.update(
-    broker_url=broker_url,
-    result_backend=backend_url,
+    broker_url=settings.REDIS_URL,
+    result_backend=settings.REDIS_URL,
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
-    task_time_limit=30 * 60,  # 30 minutes
-    task_soft_time_limit=25 * 60,  # 25 minutes
-    worker_prefetch_multiplier=4,  # Prefetch 4 tasks per worker
-    worker_max_tasks_per_child=1000,  # Restart worker after 1000 tasks to prevent memory leaks
+    task_time_limit=30 * 60,
+    task_soft_time_limit=25 * 60,
+    worker_prefetch_multiplier=4,
+    worker_max_tasks_per_child=1000,
 )
 
-# Configure SSL for Redis if using rediss://
-if is_ssl:
+if "rediss" in settings.REDIS_URL:
+    ssl_config = {
+        "ssl_cert_reqs": ssl.CERT_NONE,
+        "ssl_ca_certs": None,
+        "ssl_certfile": None,
+        "ssl_keyfile": None,
+    }
     celery_app.conf.update(
-        broker_use_ssl={
-            "ssl_cert_reqs": ssl.CERT_NONE,
-            "ssl_ca_certs": None,
-            "ssl_certfile": None,
-            "ssl_keyfile": None,
-        },
-        redis_backend_use_ssl={
-            "ssl_cert_reqs": ssl.CERT_NONE,
-            "ssl_ca_certs": None,
-            "ssl_certfile": None,
-            "ssl_keyfile": None,
-        },
+        broker_use_ssl=ssl_config,
+        redis_backend_use_ssl=ssl_config,
     )
 
-# Auto-discover tasks from the 'tasks' module in the app directory
 celery_app.autodiscover_tasks(["app"])
-
-# Explicitly import the importer module to ensure the task is registered
 from app.services import importer  # noqa: F401
 

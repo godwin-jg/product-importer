@@ -1,6 +1,6 @@
 // Product Management
 let editingProductId = null;
-let allProducts = [];
+// Removed allProducts array - we now use server-side pagination
 let currentPage = 1;
 const itemsPerPage = 10;
 
@@ -13,15 +13,44 @@ function closeModal(modalId) {
     document.getElementById(modalId).classList.remove('show');
 }
 
-// Fetch and display products
+// Fetch and display products with server-side pagination
 async function fetchProducts() {
+    // Get current filter values
+    const searchTerm = document.getElementById('search-input').value;
+    const statusFilter = document.getElementById('status-filter').value;
+    const skip = (currentPage - 1) * itemsPerPage;
+
+    // Build the query string
+    const params = new URLSearchParams();
+    params.append('skip', skip);
+    params.append('limit', itemsPerPage);
+    
+    if (searchTerm) {
+        params.append('search', searchTerm);
+    }
+    if (statusFilter) {
+        // Convert string "true"/"false" to boolean for API
+        // FastAPI will parse the boolean string correctly
+        params.append('active', statusFilter === 'true');
+    }
+
     try {
-        const response = await fetch('/products/');
+        const response = await fetch(`/products/?${params.toString()}`);
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
-        allProducts = await response.json();
-        applyFilters();
+        
+        const data = await response.json();
+        
+        // data is now { total: 12345, products: [...] }
+        const products = data.products;
+        const totalItems = data.total;
+        
+        const totalPages = Math.ceil(totalItems / itemsPerPage);
+        
+        populateProductsTable(products);
+        renderPagination(totalPages);
+        
     } catch (error) {
         console.error('Error fetching products:', error);
         alert('Failed to fetch products: ' + error.message);
@@ -29,27 +58,9 @@ async function fetchProducts() {
 }
 
 // Apply filters and pagination
+// This function now just tells fetchProducts to get the new filtered data from the server
 function applyFilters() {
-    const searchTerm = document.getElementById('search-input').value.toLowerCase();
-    const statusFilter = document.getElementById('status-filter').value;
-    
-    let filtered = allProducts.filter(product => {
-        const matchesSearch = !searchTerm || 
-            product.sku.toLowerCase().includes(searchTerm) ||
-            product.name.toLowerCase().includes(searchTerm);
-        const matchesStatus = !statusFilter || 
-            (statusFilter === 'true' && product.active) ||
-            (statusFilter === 'false' && !product.active);
-        return matchesSearch && matchesStatus;
-    });
-    
-    const totalPages = Math.ceil(filtered.length / itemsPerPage);
-    const start = (currentPage - 1) * itemsPerPage;
-    const end = start + itemsPerPage;
-    const paginated = filtered.slice(start, end);
-    
-    populateProductsTable(paginated);
-    renderPagination(totalPages);
+    fetchProducts();
 }
 
 // Populate products table
@@ -86,7 +97,7 @@ function populateProductsTable(products) {
     });
 }
 
-// Render pagination
+// Render pagination with smart page window
 function renderPagination(totalPages) {
     const paginationDiv = document.getElementById('pagination');
     paginationDiv.innerHTML = '';
@@ -97,6 +108,7 @@ function renderPagination(totalPages) {
     const prevBtn = document.createElement('button');
     prevBtn.textContent = '<< Previous';
     prevBtn.disabled = currentPage === 1;
+    prevBtn.classList.toggle('disabled', currentPage === 1);
     prevBtn.addEventListener('click', () => {
         if (currentPage > 1) {
             currentPage--;
@@ -105,22 +117,75 @@ function renderPagination(totalPages) {
     });
     paginationDiv.appendChild(prevBtn);
     
-    // Page numbers
-    for (let i = 1; i <= totalPages; i++) {
-        const pageBtn = document.createElement('button');
-        pageBtn.textContent = i;
-        pageBtn.classList.toggle('active', i === currentPage);
-        pageBtn.addEventListener('click', () => {
-            currentPage = i;
-            applyFilters();
-        });
-        paginationDiv.appendChild(pageBtn);
+    // Smart pagination: show first, last, current page ± 2, and ellipsis
+    const maxVisiblePages = 7; // Show max 7 page numbers
+    const pagesToShow = [];
+    
+    if (totalPages <= maxVisiblePages) {
+        // Show all pages if total is small
+        for (let i = 1; i <= totalPages; i++) {
+            pagesToShow.push(i);
+        }
+    } else {
+        // Always show first page
+        pagesToShow.push(1);
+        
+        // Calculate window around current page
+        const windowSize = 2; // Show 2 pages on each side of current
+        let start = Math.max(2, currentPage - windowSize);
+        let end = Math.min(totalPages - 1, currentPage + windowSize);
+        
+        // Adjust window if we're near the start or end
+        if (currentPage <= windowSize + 2) {
+            end = Math.min(totalPages - 1, maxVisiblePages - 1);
+        } else if (currentPage >= totalPages - windowSize - 1) {
+            start = Math.max(2, totalPages - (maxVisiblePages - 2));
+        }
+        
+        // Add ellipsis after first page if needed
+        if (start > 2) {
+            pagesToShow.push('...');
+        }
+        
+        // Add pages in window
+        for (let i = start; i <= end; i++) {
+            pagesToShow.push(i);
+        }
+        
+        // Add ellipsis before last page if needed
+        if (end < totalPages - 1) {
+            pagesToShow.push('...');
+        }
+        
+        // Always show last page
+        pagesToShow.push(totalPages);
     }
+    
+    // Render page buttons
+    pagesToShow.forEach((page) => {
+        if (page === '...') {
+            const ellipsis = document.createElement('span');
+            ellipsis.textContent = '...';
+            ellipsis.style.padding = '8px 12px';
+            ellipsis.style.color = '#000';
+            paginationDiv.appendChild(ellipsis);
+        } else {
+            const pageBtn = document.createElement('button');
+            pageBtn.textContent = page;
+            pageBtn.classList.toggle('active', page === currentPage);
+            pageBtn.addEventListener('click', () => {
+                currentPage = page;
+                applyFilters();
+            });
+            paginationDiv.appendChild(pageBtn);
+        }
+    });
     
     // Next button
     const nextBtn = document.createElement('button');
     nextBtn.textContent = 'Next >>';
     nextBtn.disabled = currentPage === totalPages;
+    nextBtn.classList.toggle('disabled', currentPage === totalPages);
     nextBtn.addEventListener('click', () => {
         if (currentPage < totalPages) {
             currentPage++;
@@ -252,12 +317,12 @@ document.getElementById('product-cancel-btn').addEventListener('click', () => {
 
 // Search and filter
 document.getElementById('search-input').addEventListener('input', () => {
-    currentPage = 1;
+    currentPage = 1; // Reset to page 1 for new search
     applyFilters();
 });
 
 document.getElementById('status-filter').addEventListener('change', () => {
-    currentPage = 1;
+    currentPage = 1; // Reset to page 1 for new filter
     applyFilters();
 });
 
@@ -293,24 +358,24 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
     
     progressContainer.style.display = 'block';
     progressFill.style.width = '0%';
-    statusDiv.textContent = 'Uploading file...';
+    statusDiv.textContent = 'Preparing upload...';
     
     try {
         const formData = new FormData();
         formData.append('file', file);
         
-        const response = await fetch('/upload/csv', {
+        const result = await fetch('/upload/csv', {
             method: 'POST',
             body: formData
         });
         
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
-            throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+        if (!result.ok) {
+            const errorData = await result.json().catch(() => ({ detail: `HTTP error! status: ${result.status}` }));
+            throw new Error(errorData.detail || `HTTP error! status: ${result.status}`);
         }
         
-        const result = await response.json();
-        const jobId = result.job_id;
+        const resultData = await result.json();
+        const jobId = resultData.job_id;
         
         const eventSource = new EventSource(`/upload/progress/${jobId}`);
         
@@ -325,12 +390,14 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
                 const message = data.message || '';
                 const progress = data.progress || 0;
                 
+                // Update progress bar with smooth animation (CSS transition handles this)
                 progressFill.style.width = `${progress}%`;
                 
+                // Update status message with progress percentage for better feedback
                 if (message) {
-                    statusDiv.textContent = message;
+                    statusDiv.textContent = `${message} (${progress}%)`;
                 } else {
-                    statusDiv.textContent = `Status: ${status}`;
+                    statusDiv.textContent = `Status: ${status} (${progress}%)`;
                 }
                 
                 // Refresh product list periodically during upload to show newly added products

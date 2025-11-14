@@ -1,8 +1,7 @@
 import logging
-import os
+import ssl
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlparse
 
 import redis
 from fastapi import FastAPI
@@ -29,12 +28,12 @@ static_dir = BASE_DIR / "static"
 
 
 def mask_url_password(url: str) -> str:
-    """Mask password in URL for logging purposes."""
+    """Mask password in URL for logging."""
     try:
+        from urllib.parse import urlparse
         parsed = urlparse(url)
         if parsed.password:
-            masked = url.replace(f":{parsed.password}@", ":****@")
-            return masked
+            return url.replace(f":{parsed.password}@", ":****@")
         return url
     except Exception:
         return url
@@ -42,31 +41,23 @@ def mask_url_password(url: str) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    # Test and log database connection
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        logger.info(f"Successfully connected to database: {mask_url_password(settings.DATABASE_URL)}")
+        logger.info(f"Connected to database: {mask_url_password(settings.DATABASE_URL)}")
         Base.metadata.create_all(bind=engine)
-        logger.info("Database tables created successfully")
     except OperationalError as e:
-        logger.warning(f"Could not connect to database on startup: {e}")
-        logger.info("Application will continue, but database operations may fail")
+        logger.warning(f"Database connection failed: {e}")
     
-    # Test and log Redis connection
     try:
-        redis_client = redis.from_url(settings.REDIS_URL)
+        redis_client = redis.from_url(settings.REDIS_URL, ssl_cert_reqs=ssl.CERT_NONE if "rediss" in settings.REDIS_URL else None)
         redis_client.ping()
-        logger.info(f"Successfully connected to Redis: {mask_url_password(settings.REDIS_URL)}")
+        logger.info(f"Connected to Redis: {mask_url_password(settings.REDIS_URL)}")
         redis_client.close()
     except Exception as e:
-        logger.warning(f"Could not connect to Redis on startup: {e}")
-        logger.info("Application will continue, but Redis operations may fail")
+        logger.warning(f"Redis connection failed: {e}")
     
     yield
-    
-    # Shutdown (if needed in the future)
 
 
 app = FastAPI(lifespan=lifespan)

@@ -1,12 +1,9 @@
 import asyncio
 import json
-import os
 import ssl
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse
 
-import redis
 import redis.asyncio as aioredis
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
@@ -41,33 +38,23 @@ async def upload_csv(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
     
-    # Set initial status in Redis immediately (before task starts)
     try:
         import redis
-        redis_url_parsed = urlparse(settings.REDIS_URL)
-        is_ssl = redis_url_parsed.scheme == "rediss"
-        
-        if is_ssl:
-            import ssl
-            initial_redis_client = redis.from_url(
-                settings.REDIS_URL,
-                ssl_cert_reqs=ssl.CERT_NONE
-            )
-        else:
-            initial_redis_client = redis.from_url(settings.REDIS_URL)
-        
         redis_key = f"job:{job_id}"
+        initial_redis_client = redis.from_url(
+            settings.REDIS_URL,
+            ssl_cert_reqs=ssl.CERT_NONE if "rediss" in settings.REDIS_URL else None
+        )
         initial_redis_client.set(
             redis_key,
             json.dumps({
                 "status": "queued",
                 "message": "File uploaded, queuing for processing...",
-                "progress": 5
+                "progress": 0
             })
         )
         initial_redis_client.close()
-    except Exception as e:
-        # If Redis update fails, continue anyway - task will update it
+    except Exception:
         pass
     
     # Import and call the Celery task
@@ -92,19 +79,11 @@ async def upload_csv(file: UploadFile = File(...)):
 async def upload_progress(job_id: str):
     """Stream upload progress using Server-Sent Events."""
     async def event_generator():
-        # Create async Redis client with SSL support if needed
-        redis_url_parsed = urlparse(settings.REDIS_URL)
-        is_ssl = redis_url_parsed.scheme == "rediss"
-        
-        if is_ssl:
-            redis_client = aioredis.from_url(
-                settings.REDIS_URL,
-                ssl_cert_reqs=ssl.CERT_NONE
-            )
-        else:
-            redis_client = aioredis.from_url(settings.REDIS_URL)
-        
-        last_progress = -1  # Track last progress to avoid duplicate updates
+        redis_client = aioredis.from_url(
+            settings.REDIS_URL,
+            ssl_cert_reqs=ssl.CERT_NONE if "rediss" in settings.REDIS_URL else None
+        )
+        last_progress = -1
         
         try:
             while True:
@@ -113,41 +92,28 @@ async def upload_progress(job_id: str):
                 redis_data = await redis_client.get(redis_key)
                 
                 if redis_data:
-                    # Decode bytes to string if needed
-                    if isinstance(redis_data, bytes):
-                        redis_data_str = redis_data.decode('utf-8')
-                    else:
-                        redis_data_str = str(redis_data)
-                    
-                    # Parse the data (assuming it's JSON)
+                    redis_data_str = redis_data.decode('utf-8') if isinstance(redis_data, bytes) else str(redis_data)
                     try:
                         data = json.loads(redis_data_str)
                         status = data.get("status", "unknown")
                         progress = data.get("progress", 0)
                         
-                        # Only send if progress changed (avoid duplicate updates)
                         if progress != last_progress or status in ["complete", "failed"]:
-                            # Yield in SSE format
                             yield f"data: {redis_data_str}\n\n"
                             last_progress = progress
                         
-                        # Break if job is complete or failed
                         if status in ["complete", "failed"]:
                             break
                     except json.JSONDecodeError:
-                        # If not JSON, send as-is
                         yield f"data: {redis_data_str}\n\n"
                         if redis_data_str in ["complete", "failed"]:
                             break
                 else:
-                    # Job not found or not started yet
                     yield f"data: {json.dumps({'status': 'pending', 'message': 'Job not found or not started'})}\n\n"
                 
-                # Wait before next check (poll more frequently for better responsiveness)
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
         
         finally:
-            # Close Redis connection
             await redis_client.aclose()
     
     return StreamingResponse(
