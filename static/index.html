@@ -8,46 +8,65 @@
 </head>
 <body>
     <div class="container">
+        <!-- Header -->
         <header>
             <h1>Acme Product Importer</h1>
         </header>
 
-        <!-- Product Management Section -->
+        <!-- Section 1: Data Management -->
         <section class="section">
-            <h2>Product Management</h2>
+            <h2>Data Management</h2>
             
-            <div class="form-container">
-                <form id="product-form">
-                    <div class="form-group">
-                        <label for="product-sku">SKU:</label>
-                        <input type="text" id="product-sku" name="sku" required>
+            <!-- File Upload -->
+            <div class="upload-card">
+                <h3>Upload CSV</h3>
+                <form id="upload-form">
+                    <div class="file-input-wrapper">
+                        <input type="file" id="file-input" name="file" accept=".csv" required>
+                        <label for="file-input" class="file-label">Choose CSV File</label>
                     </div>
-                    <div class="form-group">
-                        <label for="product-name">Name:</label>
-                        <input type="text" id="product-name" name="name" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="product-description">Description:</label>
-                        <textarea id="product-description" name="description" rows="3"></textarea>
-                    </div>
-                    <div class="form-group">
-                        <label for="product-active">
-                            <input type="checkbox" id="product-active" name="active" checked>
-                            Active
-                        </label>
-                    </div>
-                    <div class="form-actions">
-                        <button type="submit" id="product-submit-btn">Create Product</button>
-                        <button type="button" id="product-cancel-btn" style="display: none;">Cancel</button>
-                    </div>
+                    <button type="submit" id="upload-btn" class="btn-primary">Upload CSV</button>
                 </form>
+                
+                <!-- Upload Progress -->
+                <div class="progress-container" id="progress-container" style="display: none;">
+                    <div id="upload-progress" class="progress-bar">
+                        <div class="progress-fill"></div>
+                    </div>
+                    <div id="upload-status" class="status-message"></div>
+                </div>
             </div>
 
+            <!-- Danger Zone: Bulk Delete -->
+            <div class="danger-zone">
+                <h3>Danger Zone</h3>
+                <p>Once deleted, all product data will be gone forever.</p>
+                <button type="button" id="delete-all-btn" class="btn-danger">Delete All Products</button>
+            </div>
+        </section>
+
+        <!-- Section 2: Product Management -->
+        <section class="section">
+            <div class="section-header">
+                <h2>Product Management</h2>
+                <button type="button" id="add-product-btn" class="btn-primary">+ Add New Product</button>
+            </div>
+
+            <!-- Filters -->
+            <div class="filters">
+                <input type="text" id="search-input" class="search-input" placeholder="Search by SKU or Name...">
+                <select id="status-filter" class="status-filter">
+                    <option value="">Filter by Status: All</option>
+                    <option value="true">Active</option>
+                    <option value="false">Inactive</option>
+                </select>
+            </div>
+
+            <!-- Product Table -->
             <div class="table-container">
                 <table id="products-table">
                     <thead>
                         <tr>
-                            <th>ID</th>
                             <th>SKU</th>
                             <th>Name</th>
                             <th>Description</th>
@@ -60,74 +79,26 @@
                     </tbody>
                 </table>
             </div>
-        </section>
 
-        <!-- File Upload Section -->
-        <section class="section">
-            <h2>File Upload</h2>
-            <div class="upload-container">
-                <form id="upload-form">
-                    <div class="form-group">
-                        <label for="file-input">Select file to upload:</label>
-                        <input type="file" id="file-input" name="file" accept=".csv,.json,.xlsx" required>
-                    </div>
-                    <button type="submit" id="upload-btn">Upload File</button>
-                </form>
-                <div class="progress-container">
-                    <div id="upload-progress" class="progress-bar">
-                        <div class="progress-fill"></div>
-                    </div>
-                </div>
-                <div id="upload-status" class="status-message"></div>
+            <!-- Pagination -->
+            <div class="pagination" id="pagination">
+                <!-- Pagination will be added here -->
             </div>
         </section>
 
-        <!-- Bulk Delete Section -->
+        <!-- Section 3: Webhook Management -->
         <section class="section">
-            <h2>Bulk Delete</h2>
-            <div class="bulk-delete-container">
-                <button type="button" id="delete-all-btn" class="danger-btn">Delete All Products</button>
-            </div>
-        </section>
-
-        <!-- Webhook Management Section -->
-        <section class="section">
-            <h2>Webhook Management</h2>
-            
-            <div class="form-container">
-                <form id="webhook-form">
-                    <div class="form-group">
-                        <label for="webhook-url">URL:</label>
-                        <input type="url" id="webhook-url" name="url" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="webhook-event-type">Event Type:</label>
-                        <select id="webhook-event-type" name="event_type" required>
-                            <option value="">Select event type</option>
-                            <option value="product.created">Product Created</option>
-                            <option value="product.updated">Product Updated</option>
-                            <option value="product.deleted">Product Deleted</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="webhook-active">
-                            <input type="checkbox" id="webhook-active" name="is_active" checked>
-                            Active
-                        </label>
-                    </div>
-                    <div class="form-actions">
-                        <button type="submit" id="webhook-submit-btn">Create Webhook</button>
-                        <button type="button" id="webhook-cancel-btn" style="display: none;">Cancel</button>
-                    </div>
-                </form>
+            <div class="section-header">
+                <h2>Webhook Management</h2>
+                <button type="button" id="add-webhook-btn" class="btn-primary">+ Add New Webhook</button>
             </div>
 
+            <!-- Webhook Table -->
             <div class="table-container">
                 <table id="webhooks-table">
                     <thead>
                         <tr>
-                            <th>ID</th>
-                            <th>URL</th>
+                            <th>Webhook URL</th>
                             <th>Event Type</th>
                             <th>Active</th>
                             <th>Actions</th>
@@ -141,7 +112,75 @@
         </section>
     </div>
 
+    <!-- Product Modal -->
+    <div id="product-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="product-modal-title">Add New Product</h3>
+                <button type="button" class="modal-close" id="product-modal-close">&times;</button>
+            </div>
+            <form id="product-form">
+                <div class="form-group">
+                    <label for="product-sku">SKU:</label>
+                    <input type="text" id="product-sku" name="sku" required>
+                </div>
+                <div class="form-group">
+                    <label for="product-name">Name:</label>
+                    <input type="text" id="product-name" name="name" required>
+                </div>
+                <div class="form-group">
+                    <label for="product-description">Description:</label>
+                    <textarea id="product-description" name="description" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="product-active">
+                        <input type="checkbox" id="product-active" name="active" checked>
+                        Active
+                    </label>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" id="product-submit-btn" class="btn-primary">Save</button>
+                    <button type="button" id="product-cancel-btn" class="btn-secondary">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Webhook Modal -->
+    <div id="webhook-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add New Webhook</h3>
+                <button type="button" class="modal-close" id="webhook-modal-close">&times;</button>
+            </div>
+            <form id="webhook-form">
+                <div class="form-group">
+                    <label for="webhook-url">URL:</label>
+                    <input type="url" id="webhook-url" name="url" required>
+                </div>
+                <div class="form-group">
+                    <label for="webhook-event-type">Event Type:</label>
+                    <select id="webhook-event-type" name="event_type" required>
+                        <option value="">Select event type</option>
+                        <option value="product.created">Product Created</option>
+                        <option value="product.updated">Product Updated</option>
+                        <option value="product.deleted">Product Deleted</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="webhook-active">
+                        <input type="checkbox" id="webhook-active" name="is_active" checked>
+                        Active
+                    </label>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" id="webhook-submit-btn" class="btn-primary">Save</button>
+                    <button type="button" id="webhook-cancel-btn" class="btn-secondary">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script src="/static/main.js"></script>
 </body>
 </html>
-

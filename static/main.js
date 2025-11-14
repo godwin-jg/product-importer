@@ -1,5 +1,17 @@
 // Product Management
 let editingProductId = null;
+let allProducts = [];
+let currentPage = 1;
+const itemsPerPage = 10;
+
+// Modal functions
+function openModal(modalId) {
+    document.getElementById(modalId).classList.add('show');
+}
+
+function closeModal(modalId) {
+    document.getElementById(modalId).classList.remove('show');
+}
 
 // Fetch and display products
 async function fetchProducts() {
@@ -8,12 +20,36 @@ async function fetchProducts() {
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
-        const products = await response.json();
-        populateProductsTable(products);
+        allProducts = await response.json();
+        applyFilters();
     } catch (error) {
         console.error('Error fetching products:', error);
         alert('Failed to fetch products: ' + error.message);
     }
+}
+
+// Apply filters and pagination
+function applyFilters() {
+    const searchTerm = document.getElementById('search-input').value.toLowerCase();
+    const statusFilter = document.getElementById('status-filter').value;
+    
+    let filtered = allProducts.filter(product => {
+        const matchesSearch = !searchTerm || 
+            product.sku.toLowerCase().includes(searchTerm) ||
+            product.name.toLowerCase().includes(searchTerm);
+        const matchesStatus = !statusFilter || 
+            (statusFilter === 'true' && product.active) ||
+            (statusFilter === 'false' && !product.active);
+        return matchesSearch && matchesStatus;
+    });
+    
+    const totalPages = Math.ceil(filtered.length / itemsPerPage);
+    const start = (currentPage - 1) * itemsPerPage;
+    const end = start + itemsPerPage;
+    const paginated = filtered.slice(start, end);
+    
+    populateProductsTable(paginated);
+    renderPagination(totalPages);
 }
 
 // Populate products table
@@ -22,14 +58,13 @@ function populateProductsTable(products) {
     tbody.innerHTML = '';
 
     if (products.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No products found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No products found</td></tr>';
         return;
     }
 
     products.forEach(product => {
         const row = document.createElement('tr');
         row.innerHTML = `
-            <td>${product.id}</td>
             <td>${product.sku}</td>
             <td>${product.name}</td>
             <td>${product.description || ''}</td>
@@ -42,7 +77,7 @@ function populateProductsTable(products) {
         tbody.appendChild(row);
     });
 
-    // Add event listeners to edit and delete buttons
+    // Add event listeners
     document.querySelectorAll('.edit-btn').forEach(btn => {
         btn.addEventListener('click', handleEdit);
     });
@@ -51,12 +86,55 @@ function populateProductsTable(products) {
     });
 }
 
+// Render pagination
+function renderPagination(totalPages) {
+    const paginationDiv = document.getElementById('pagination');
+    paginationDiv.innerHTML = '';
+    
+    if (totalPages <= 1) return;
+    
+    // Previous button
+    const prevBtn = document.createElement('button');
+    prevBtn.textContent = '<< Previous';
+    prevBtn.disabled = currentPage === 1;
+    prevBtn.addEventListener('click', () => {
+        if (currentPage > 1) {
+            currentPage--;
+            applyFilters();
+        }
+    });
+    paginationDiv.appendChild(prevBtn);
+    
+    // Page numbers
+    for (let i = 1; i <= totalPages; i++) {
+        const pageBtn = document.createElement('button');
+        pageBtn.textContent = i;
+        pageBtn.classList.toggle('active', i === currentPage);
+        pageBtn.addEventListener('click', () => {
+            currentPage = i;
+            applyFilters();
+        });
+        paginationDiv.appendChild(pageBtn);
+    }
+    
+    // Next button
+    const nextBtn = document.createElement('button');
+    nextBtn.textContent = 'Next >>';
+    nextBtn.disabled = currentPage === totalPages;
+    nextBtn.addEventListener('click', () => {
+        if (currentPage < totalPages) {
+            currentPage++;
+            applyFilters();
+        }
+    });
+    paginationDiv.appendChild(nextBtn);
+}
+
 // Handle edit button click
 function handleEdit(event) {
     const productId = parseInt(event.target.getAttribute('data-id'));
     editingProductId = productId;
 
-    // Fetch product details
     fetch(`/products/${productId}`)
         .then(response => {
             if (!response.ok) {
@@ -65,18 +143,12 @@ function handleEdit(event) {
             return response.json();
         })
         .then(product => {
-            // Populate form
             document.getElementById('product-sku').value = product.sku;
             document.getElementById('product-name').value = product.name;
             document.getElementById('product-description').value = product.description || '';
             document.getElementById('product-active').checked = product.active;
-
-            // Update form button text and show cancel button
-            document.getElementById('product-submit-btn').textContent = 'Update Product';
-            document.getElementById('product-cancel-btn').style.display = 'inline-block';
-
-            // Scroll to form
-            document.getElementById('product-form').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            document.getElementById('product-modal-title').textContent = 'Edit Product';
+            openModal('product-modal');
         })
         .catch(error => {
             console.error('Error fetching product:', error);
@@ -101,7 +173,6 @@ async function handleDelete(event) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
 
-        // Refresh products table
         await fetchProducts();
     } catch (error) {
         console.error('Error deleting product:', error);
@@ -109,7 +180,7 @@ async function handleDelete(event) {
     }
 }
 
-// Handle form submission
+// Handle product form submission
 document.getElementById('product-form').addEventListener('submit', async (e) => {
     e.preventDefault();
 
@@ -123,7 +194,6 @@ document.getElementById('product-form').addEventListener('submit', async (e) => 
     try {
         let response;
         if (editingProductId) {
-            // Update existing product
             response = await fetch(`/products/${editingProductId}`, {
                 method: 'PUT',
                 headers: {
@@ -132,7 +202,6 @@ document.getElementById('product-form').addEventListener('submit', async (e) => 
                 body: JSON.stringify(formData)
             });
         } else {
-            // Create new product
             response = await fetch('/products/', {
                 method: 'POST',
                 headers: {
@@ -147,7 +216,7 @@ document.getElementById('product-form').addEventListener('submit', async (e) => 
             throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
         }
 
-        // Reset form and refresh table
+        closeModal('product-modal');
         resetProductForm();
         await fetchProducts();
     } catch (error) {
@@ -156,19 +225,41 @@ document.getElementById('product-form').addEventListener('submit', async (e) => 
     }
 });
 
-// Handle cancel button
-document.getElementById('product-cancel-btn').addEventListener('click', () => {
-    resetProductForm();
-});
-
 // Reset product form
 function resetProductForm() {
     document.getElementById('product-form').reset();
     document.getElementById('product-active').checked = true;
     editingProductId = null;
-    document.getElementById('product-submit-btn').textContent = 'Create Product';
-    document.getElementById('product-cancel-btn').style.display = 'none';
+    document.getElementById('product-modal-title').textContent = 'Add New Product';
 }
+
+// Add Product button
+document.getElementById('add-product-btn').addEventListener('click', () => {
+    resetProductForm();
+    openModal('product-modal');
+});
+
+// Product modal close buttons
+document.getElementById('product-modal-close').addEventListener('click', () => {
+    closeModal('product-modal');
+    resetProductForm();
+});
+
+document.getElementById('product-cancel-btn').addEventListener('click', () => {
+    closeModal('product-modal');
+    resetProductForm();
+});
+
+// Search and filter
+document.getElementById('search-input').addEventListener('input', () => {
+    currentPage = 1;
+    applyFilters();
+});
+
+document.getElementById('status-filter').addEventListener('change', () => {
+    currentPage = 1;
+    applyFilters();
+});
 
 // File Upload
 document.getElementById('upload-form').addEventListener('submit', async (e) => {
@@ -182,14 +273,15 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         return;
     }
     
-    // Reset progress and status
+    const progressContainer = document.getElementById('progress-container');
     const progressFill = document.querySelector('#upload-progress .progress-fill');
     const statusDiv = document.getElementById('upload-status');
+    
+    progressContainer.style.display = 'block';
     progressFill.style.width = '0%';
     statusDiv.textContent = 'Uploading file...';
     
     try {
-        // Create FormData and send file
         const formData = new FormData();
         formData.append('file', file);
         
@@ -206,7 +298,6 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         const result = await response.json();
         const jobId = result.job_id;
         
-        // Create EventSource for progress updates
         const eventSource = new EventSource(`/upload/progress/${jobId}`);
         
         eventSource.onmessage = (event) => {
@@ -216,23 +307,19 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
                 const message = data.message || '';
                 const progress = data.progress || 0;
                 
-                // Update progress bar
                 progressFill.style.width = `${progress}%`;
                 
-                // Update status message
                 if (message) {
                     statusDiv.textContent = message;
                 } else {
                     statusDiv.textContent = `Status: ${status}`;
                 }
                 
-                // Close EventSource if job is complete or failed
                 if (status === 'complete' || status === 'failed') {
                     eventSource.close();
                     
                     if (status === 'complete') {
                         statusDiv.textContent = 'Upload completed successfully!';
-                        // Refresh products table to show new products
                         fetchProducts();
                     } else {
                         statusDiv.textContent = `Upload failed: ${message || 'Unknown error'}`;
@@ -271,7 +358,6 @@ document.getElementById('delete-all-btn').addEventListener('click', async () => 
             }
 
             alert('All products deleted successfully');
-            // Refresh products table
             await fetchProducts();
         } catch (error) {
             console.error('Error deleting all products:', error);
@@ -283,7 +369,6 @@ document.getElementById('delete-all-btn').addEventListener('click', async () => 
 // Webhook Management
 let editingWebhookId = null;
 
-// Fetch and display webhooks
 async function fetchWebhooks() {
     try {
         const response = await fetch('/webhooks/');
@@ -298,20 +383,18 @@ async function fetchWebhooks() {
     }
 }
 
-// Populate webhooks table
 function populateWebhooksTable(webhooks) {
     const tbody = document.querySelector('#webhooks-table tbody');
     tbody.innerHTML = '';
 
     if (webhooks.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No webhooks found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center;">No webhooks found</td></tr>';
         return;
     }
 
     webhooks.forEach(webhook => {
         const row = document.createElement('tr');
         row.innerHTML = `
-            <td>${webhook.id}</td>
             <td>${webhook.url}</td>
             <td>${webhook.event_type}</td>
             <td>${webhook.is_active ? 'Yes' : 'No'}</td>
@@ -322,13 +405,11 @@ function populateWebhooksTable(webhooks) {
         tbody.appendChild(row);
     });
 
-    // Add event listeners to delete buttons
     document.querySelectorAll('.delete-webhook-btn').forEach(btn => {
         btn.addEventListener('click', handleDeleteWebhook);
     });
 }
 
-// Handle delete webhook button click
 async function handleDeleteWebhook(event) {
     const webhookId = parseInt(event.target.getAttribute('data-id'));
     
@@ -345,7 +426,6 @@ async function handleDeleteWebhook(event) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
 
-        // Refresh webhooks table
         await fetchWebhooks();
     } catch (error) {
         console.error('Error deleting webhook:', error);
@@ -353,14 +433,12 @@ async function handleDeleteWebhook(event) {
     }
 }
 
-// Handle webhook form submission
 document.getElementById('webhook-form').addEventListener('submit', async (e) => {
     e.preventDefault();
 
     const formData = {
         url: document.getElementById('webhook-url').value,
-        event_type: document.getElementById('webhook-event-type').value,
-        is_active: document.getElementById('webhook-active').checked
+        event_type: document.getElementById('webhook-event-type').value
     };
 
     try {
@@ -369,10 +447,7 @@ document.getElementById('webhook-form').addEventListener('submit', async (e) => 
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-                url: formData.url,
-                event_type: formData.event_type
-            })
+            body: JSON.stringify(formData)
         });
 
         if (!response.ok) {
@@ -380,7 +455,7 @@ document.getElementById('webhook-form').addEventListener('submit', async (e) => 
             throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
         }
 
-        // Reset form and refresh table
+        closeModal('webhook-modal');
         resetWebhookForm();
         await fetchWebhooks();
     } catch (error) {
@@ -389,23 +464,44 @@ document.getElementById('webhook-form').addEventListener('submit', async (e) => 
     }
 });
 
-// Handle cancel button
-document.getElementById('webhook-cancel-btn').addEventListener('click', () => {
-    resetWebhookForm();
-});
-
-// Reset webhook form
 function resetWebhookForm() {
     document.getElementById('webhook-form').reset();
     document.getElementById('webhook-active').checked = true;
     editingWebhookId = null;
-    document.getElementById('webhook-submit-btn').textContent = 'Create Webhook';
-    document.getElementById('webhook-cancel-btn').style.display = 'none';
 }
 
-// Load products and webhooks on page load
+document.getElementById('add-webhook-btn').addEventListener('click', () => {
+    resetWebhookForm();
+    openModal('webhook-modal');
+});
+
+document.getElementById('webhook-modal-close').addEventListener('click', () => {
+    closeModal('webhook-modal');
+    resetWebhookForm();
+});
+
+document.getElementById('webhook-cancel-btn').addEventListener('click', () => {
+    closeModal('webhook-modal');
+    resetWebhookForm();
+});
+
+// Close modals when clicking outside
+window.addEventListener('click', (e) => {
+    const productModal = document.getElementById('product-modal');
+    const webhookModal = document.getElementById('webhook-modal');
+    
+    if (e.target === productModal) {
+        closeModal('product-modal');
+        resetProductForm();
+    }
+    if (e.target === webhookModal) {
+        closeModal('webhook-modal');
+        resetWebhookForm();
+    }
+});
+
+// Load on page load
 document.addEventListener('DOMContentLoaded', () => {
     fetchProducts();
     fetchWebhooks();
 });
-

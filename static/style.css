@@ -17,6 +17,7 @@ body {
     margin: 0 auto;
 }
 
+/* Header */
 header {
     margin-bottom: 40px;
     padding-bottom: 20px;
@@ -28,6 +29,7 @@ header h1 {
     font-weight: 600;
 }
 
+/* Sections */
 .section {
     margin-bottom: 40px;
     padding: 20px;
@@ -38,15 +40,288 @@ header h1 {
     font-size: 1.5rem;
     font-weight: 600;
     margin-bottom: 20px;
-    padding-bottom: 10px;
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.section-header h2 {
+    margin-bottom: 0;
+}
+
+/* Buttons */
+button, .btn-primary, .btn-secondary, .btn-danger {
+    padding: 10px 20px;
+    border: 1px solid #000;
+    background-color: #fff;
+    color: #000;
+    font-size: 1rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-primary:hover {
+    background-color: #000;
+    color: #fff;
+}
+
+.btn-secondary {
+    background-color: #f5f5f5;
+}
+
+.btn-secondary:hover {
+    background-color: #e0e0e0;
+}
+
+.btn-danger {
+    background-color: #000;
+    color: #fff;
+    border-color: #000;
+}
+
+.btn-danger:hover {
+    background-color: #fff;
+    color: #000;
+}
+
+/* Upload Card */
+.upload-card {
+    margin-bottom: 30px;
+    padding: 20px;
+    border: 1px solid #000;
+}
+
+.upload-card h3 {
+    margin-bottom: 15px;
+    font-size: 1.2rem;
+}
+
+.file-input-wrapper {
+    margin-bottom: 15px;
+}
+
+.file-label {
+    display: inline-block;
+    padding: 8px 15px;
+    border: 1px solid #000;
+    cursor: pointer;
+    margin-right: 10px;
+}
+
+.file-label:hover {
+    background-color: #f5f5f5;
+}
+
+input[type="file"] {
+    display: none;
+}
+
+/* Progress */
+.progress-container {
+    margin-top: 20px;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 24px;
+    border: 1px solid #000;
+    background-color: #fff;
+    overflow: hidden;
+    margin-bottom: 10px;
+}
+
+.progress-fill {
+    height: 100%;
+    width: 0%;
+    background-color: #000;
+    transition: width 0.3s;
+}
+
+.status-message {
+    font-size: 0.9rem;
+    color: #000;
+}
+
+/* Danger Zone */
+.danger-zone {
+    padding: 20px;
+    border: 2px solid #000;
+    background-color: #fff;
+}
+
+.danger-zone h3 {
+    color: #000;
+    margin-bottom: 10px;
+    font-size: 1.1rem;
+}
+
+.danger-zone p {
+    margin-bottom: 15px;
+    color: #000;
+}
+
+/* Filters */
+.filters {
+    display: flex;
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.search-input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid #000;
+    font-size: 1rem;
+}
+
+.status-filter {
+    padding: 8px 12px;
+    border: 1px solid #000;
+    background-color: #fff;
+    font-size: 1rem;
+    cursor: pointer;
+}
+
+/* Tables */
+.table-container {
+    overflow-x: auto;
+    margin-bottom: 20px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    border: 1px solid #000;
+}
+
+table thead {
+    background-color: #000;
+    color: #fff;
+}
+
+table th,
+table td {
+    padding: 12px;
+    text-align: left;
     border-bottom: 1px solid #000;
 }
 
-/* Forms */
-.form-container {
-    margin-bottom: 30px;
+table tbody tr:hover {
+    background-color: #f5f5f5;
 }
 
+table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+table td {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Pagination */
+.pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.pagination button,
+.pagination a {
+    padding: 8px 12px;
+    border: 1px solid #000;
+    background-color: #fff;
+    color: #000;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.pagination button:hover,
+.pagination a:hover {
+    background-color: #000;
+    color: #fff;
+}
+
+.pagination .active {
+    background-color: #000;
+    color: #fff;
+}
+
+.pagination .disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Modals */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    overflow: auto;
+}
+
+.modal.show {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-content {
+    background-color: #fff;
+    border: 2px solid #000;
+    padding: 0;
+    width: 90%;
+    max-width: 500px;
+    position: relative;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    border-bottom: 1px solid #000;
+}
+
+.modal-header h3 {
+    margin: 0;
+    font-size: 1.3rem;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 2rem;
+    cursor: pointer;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    line-height: 1;
+}
+
+.modal-close:hover {
+    background-color: #f5f5f5;
+}
+
+.modal-content form {
+    padding: 20px;
+}
+
+/* Forms */
 .form-group {
     margin-bottom: 15px;
 }
@@ -79,106 +354,13 @@ header h1 {
 }
 
 .form-actions {
+    display: flex;
+    gap: 10px;
     margin-top: 20px;
 }
 
-/* Buttons */
-button {
-    padding: 10px 20px;
-    border: 1px solid #000;
-    background-color: #fff;
-    color: #000;
-    font-size: 1rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-button:hover {
-    background-color: #000;
-    color: #fff;
-}
-
-button:active {
-    transform: scale(0.98);
-}
-
-.danger-btn {
-    background-color: #000;
-    color: #fff;
-}
-
-.danger-btn:hover {
-    background-color: #fff;
-    color: #000;
-}
-
-/* Tables */
-.table-container {
-    overflow-x: auto;
-    margin-top: 20px;
-}
-
-table {
-    width: 100%;
-    border-collapse: collapse;
-    border: 1px solid #000;
-}
-
-table thead {
-    background-color: #000;
-    color: #fff;
-}
-
-table th,
-table td {
-    padding: 12px;
-    text-align: left;
-    border-bottom: 1px solid #000;
-}
-
-table tbody tr:hover {
-    background-color: #f5f5f5;
-}
-
-table tbody tr:last-child td {
-    border-bottom: none;
-}
-
-/* Upload Section */
-.upload-container {
-    margin-top: 20px;
-}
-
-.progress-container {
-    margin: 20px 0;
-}
-
-.progress-bar {
-    width: 100%;
-    height: 24px;
-    border: 1px solid #000;
-    background-color: #fff;
-    overflow: hidden;
-}
-
-.progress-fill {
-    height: 100%;
-    width: 0%;
-    background-color: #000;
-    transition: width 0.3s;
-}
-
-.status-message {
-    margin-top: 15px;
-    padding: 10px;
-    border: 1px solid #000;
-    min-height: 40px;
-}
-
-/* Bulk Delete */
-.bulk-delete-container {
-    margin-top: 20px;
+.form-actions button {
+    flex: 1;
 }
 
 /* Responsive */
@@ -195,8 +377,14 @@ table tbody tr:last-child td {
         padding: 15px;
     }
 
-    .section h2 {
-        font-size: 1.25rem;
+    .section-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 15px;
+    }
+
+    .filters {
+        flex-direction: column;
     }
 
     table {
@@ -208,9 +396,8 @@ table tbody tr:last-child td {
         padding: 8px;
     }
 
-    button {
-        width: 100%;
-        margin-bottom: 10px;
+    .modal-content {
+        width: 95%;
+        margin: 20px auto;
     }
 }
-
