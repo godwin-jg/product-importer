@@ -1,9 +1,12 @@
 import logging
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from urllib.parse import urlparse
 
 import redis
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
@@ -19,6 +22,10 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
+
+# Static files directory - use absolute path from project root
+BASE_DIR = Path(__file__).resolve().parent.parent
+static_dir = BASE_DIR / "static"
 
 
 def mask_url_password(url: str) -> str:
@@ -63,14 +70,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Mount static files first (before routes)
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
 # Include routers
 app.include_router(product_routes.router)
 
 
 @app.get("/")
 async def root():
-    return {"message": "OK"}
-
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
+    """Serve the frontend index page."""
+    return FileResponse(
+        static_dir / "index.html",
+        media_type="text/html"
+    )
 
