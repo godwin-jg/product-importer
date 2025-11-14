@@ -50,3 +50,6 @@ if is_ssl:
 # Auto-discover tasks from the 'tasks' module in the app directory
 celery_app.autodiscover_tasks(["app"])
 
+# Explicitly import the importer module to ensure the task is registered
+from app.services import importer  # noqa: F401
+

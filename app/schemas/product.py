@@ -15,6 +15,7 @@ class ProductUpdate(ProductBase):
     sku: str | None = None
     name: str | None = None
     description: str | None = None
+    active: bool | None = None
 
 
 class Product(ProductBase):

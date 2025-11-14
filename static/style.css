@@ -121,6 +121,14 @@ input[type="file"] {
     display: none;
 }
 
+.file-name-display {
+    display: none;
+    margin-left: 10px;
+    font-size: 0.9rem;
+    color: #000;
+    font-style: italic;
+}
+
 /* Progress */
 .progress-container {
     margin-top: 20px;

@@ -103,6 +103,8 @@ def update_product(
         db_product.name = product_update.name
     if product_update.description is not None:
         db_product.description = product_update.description
+    if product_update.active is not None:
+        db_product.active = product_update.active
     
     db.commit()
     db.refresh(db_product)

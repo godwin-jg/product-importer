@@ -261,6 +261,20 @@ document.getElementById('status-filter').addEventListener('change', () => {
     applyFilters();
 });
 
+// File Upload - Show selected filename
+document.getElementById('file-input').addEventListener('change', (e) => {
+    const fileInput = e.target;
+    const fileNameDisplay = document.getElementById('file-name-display');
+    
+    if (fileInput.files && fileInput.files.length > 0) {
+        fileNameDisplay.textContent = `Selected: ${fileInput.files[0].name}`;
+        fileNameDisplay.style.display = 'inline-block';
+    } else {
+        fileNameDisplay.textContent = '';
+        fileNameDisplay.style.display = 'none';
+    }
+});
+
 // File Upload
 document.getElementById('upload-form').addEventListener('submit', async (e) => {
     e.preventDefault();
