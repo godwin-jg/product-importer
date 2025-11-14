@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
-from app.api import product_routes
+from app.api import product_routes, upload_routes
 from app.core.config import settings
 from app.database import Base, engine
 
@@ -75,6 +75,7 @@ app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 # Include routers
 app.include_router(product_routes.router)
+app.include_router(upload_routes.router)
 
 
 @app.get("/")
