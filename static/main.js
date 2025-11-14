@@ -367,15 +367,24 @@ document.getElementById('delete-all-btn').addEventListener('click', async () => 
             });
 
             if (!response.ok) {
-                const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
-                throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+                let errorMessage = `HTTP error! status: ${response.status}`;
+                try {
+                    const errorData = await response.json();
+                    errorMessage = errorData.detail || errorData.message || JSON.stringify(errorData) || errorMessage;
+                } catch (e) {
+                    // If response is not JSON, use status text
+                    errorMessage = response.statusText || errorMessage;
+                }
+                throw new Error(errorMessage);
             }
 
-            alert('All products deleted successfully');
+            const result = await response.json();
+            alert(result.message || 'All products deleted successfully');
             await fetchProducts();
         } catch (error) {
             console.error('Error deleting all products:', error);
-            alert('Failed to delete all products: ' + error.message);
+            const errorMessage = error.message || String(error) || 'Unknown error occurred';
+            alert('Failed to delete all products: ' + errorMessage);
         }
     }
 });

@@ -34,18 +34,6 @@ def create_product(
     return db_product
 
 
-@router.get("/{product_id}", response_model=Product)
-def get_product(
-    product_id: int,
-    db: Annotated[Session, Depends(get_db)]
-):
-    """Get a product by ID."""
-    product = db.query(ProductModel).filter(ProductModel.id == product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    return product
-
-
 @router.get("/", response_model=list[Product])
 def list_products(
     db: Annotated[Session, Depends(get_db)],
@@ -76,6 +64,28 @@ def list_products(
     # Apply pagination
     products = query.offset(skip).limit(limit).all()
     return products
+
+
+@router.delete("/all")
+def delete_all_products(
+    db: Annotated[Session, Depends(get_db)]
+):
+    """Delete all products."""
+    db.query(ProductModel).delete()
+    db.commit()
+    return {"message": "All products deleted successfully", "ok": True}
+
+
+@router.get("/{product_id}", response_model=Product)
+def get_product(
+    product_id: int,
+    db: Annotated[Session, Depends(get_db)]
+):
+    """Get a product by ID."""
+    product = db.query(ProductModel).filter(ProductModel.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return product
 
 
 @router.put("/{product_id}", response_model=Product)
@@ -124,14 +134,4 @@ def delete_product(
     db.delete(db_product)
     db.commit()
     return {"ok": True}
-
-
-@router.delete("/all")
-def delete_all_products(
-    db: Annotated[Session, Depends(get_db)]
-):
-    """Delete all products."""
-    db.query(ProductModel).delete()
-    db.commit()
-    return {"message": "All products deleted successfully", "ok": True}
 
