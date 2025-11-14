@@ -170,6 +170,93 @@ function resetProductForm() {
     document.getElementById('product-cancel-btn').style.display = 'none';
 }
 
+// File Upload
+document.getElementById('upload-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const fileInput = document.getElementById('file-input');
+    const file = fileInput.files[0];
+    
+    if (!file) {
+        alert('Please select a file to upload');
+        return;
+    }
+    
+    // Reset progress and status
+    const progressFill = document.querySelector('#upload-progress .progress-fill');
+    const statusDiv = document.getElementById('upload-status');
+    progressFill.style.width = '0%';
+    statusDiv.textContent = 'Uploading file...';
+    
+    try {
+        // Create FormData and send file
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const response = await fetch('/upload/csv', {
+            method: 'POST',
+            body: formData
+        });
+        
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+            throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        const jobId = result.job_id;
+        
+        // Create EventSource for progress updates
+        const eventSource = new EventSource(`/upload/progress/${jobId}`);
+        
+        eventSource.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                const status = data.status || 'unknown';
+                const message = data.message || '';
+                const progress = data.progress || 0;
+                
+                // Update progress bar
+                progressFill.style.width = `${progress}%`;
+                
+                // Update status message
+                if (message) {
+                    statusDiv.textContent = message;
+                } else {
+                    statusDiv.textContent = `Status: ${status}`;
+                }
+                
+                // Close EventSource if job is complete or failed
+                if (status === 'complete' || status === 'failed') {
+                    eventSource.close();
+                    
+                    if (status === 'complete') {
+                        statusDiv.textContent = 'Upload completed successfully!';
+                        // Refresh products table to show new products
+                        fetchProducts();
+                    } else {
+                        statusDiv.textContent = `Upload failed: ${message || 'Unknown error'}`;
+                    }
+                }
+            } catch (error) {
+                console.error('Error parsing progress data:', error);
+                statusDiv.textContent = 'Error parsing progress update';
+            }
+        };
+        
+        eventSource.onerror = (error) => {
+            console.error('EventSource error:', error);
+            eventSource.close();
+            statusDiv.textContent = 'Connection to progress stream lost';
+        };
+        
+    } catch (error) {
+        console.error('Error uploading file:', error);
+        alert('Failed to upload file: ' + error.message);
+        statusDiv.textContent = 'Upload failed: ' + error.message;
+    }
+});
+
 // Load products on page load
 document.addEventListener('DOMContentLoaded', () => {
     fetchProducts();
