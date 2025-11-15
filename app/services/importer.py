@@ -372,95 +372,22 @@ def process_csv_chunk(self, chunk_data: List[Dict[str, Any]], job_id: str, chunk
     retry_backoff_max=60,
     retry_jitter=True,
 )
-def process_csv_import(self, file_source: str, job_id: str, use_cloudinary: bool = False):
+def run_parallel_import_task(self, local_file_path: str, job_id: str):
     """
-    Process CSV import by splitting into chunks and processing them in parallel.
-    This orchestrates the parallel processing of chunks across multiple workers.
+    (Task 2) Orchestrates the parallel processing of a downloaded local file.
+    This task splits the CSV, dispatches chunks, and monitors progress.
     
     Args:
-        file_source: Either a Cloudinary URL (if use_cloudinary=True) or base64-encoded content
+        local_file_path: Path to the local CSV file
         job_id: Unique job identifier
-        use_cloudinary: If True, file_source is a Cloudinary URL; if False, it's base64 content
     """
-    logger.info(f"Starting parallel CSV import: job_id={job_id}, use_cloudinary={use_cloudinary}")
-
     redis_client = None
     db = None
-    file_path_obj = None
     redis_key = f"job:{job_id}"
 
     try:
         redis_client = _get_redis_client_with_retry()
         
-        # Immediately update status to show task has started
-        _redis_operation_with_retry(
-            lambda: redis_client.set(redis_key, json.dumps({
-                "status": "processing",
-                "message": "Task started, downloading file..." if use_cloudinary else "Task started, initializing...",
-                "progress": 0
-            }))
-        )
-    except Exception as e:
-        logger.error(f"Failed to create Redis client: {e}")
-        # Try to update status even if Redis connection failed initially
-        try:
-            temp_redis = redis.from_url(
-                settings.REDIS_URL,
-                ssl_cert_reqs=ssl.CERT_NONE if "rediss" in settings.REDIS_URL else None,
-                decode_responses=True
-            )
-            temp_redis.set(redis_key, json.dumps({
-                "status": "failed",
-                "message": f"Failed to connect to Redis: {str(e)}",
-                "progress": 0
-            }))
-            temp_redis.close()
-        except Exception:
-            pass
-        raise
-    
-    # Download from Cloudinary or decode base64 content and write to temporary file
-    try:
-        if use_cloudinary:
-            # Download file from Cloudinary
-            logger.info(f"Downloading file from Cloudinary: {file_source}")
-            with httpx.Client(timeout=300.0) as client:  # 5 minute timeout for large files
-                response = client.get(file_source)
-                response.raise_for_status()
-                file_content = response.content
-        else:
-            # Decode base64 content
-            logger.info("Decoding base64 file content")
-            file_content = base64.b64decode(file_source)
-        
-        # Create a temporary file on the worker's filesystem
-        with tempfile.NamedTemporaryFile(mode='wb', suffix='.csv', delete=False) as temp_file:
-            temp_file.write(file_content)
-            file_path_obj = Path(temp_file.name)
-        logger.info(f"File saved to temporary file: {file_path_obj}")
-    except Exception as e:
-        error_msg = f"Failed to download/decode file: {str(e)}"
-        logger.error(error_msg, exc_info=True)
-        if redis_client:
-            redis_client.set(redis_key, json.dumps({
-                "status": "failed",
-                "message": error_msg,
-                "progress": 0
-            }))
-        return
-    
-    if not file_path_obj or not file_path_obj.exists():
-        error_msg = f"File not found after download/decode: {file_path_obj}"
-        logger.error(error_msg)
-        if redis_client:
-            redis_client.set(redis_key, json.dumps({
-                "status": "failed",
-                "message": error_msg,
-                "progress": 0
-            }))
-        return
-
-    try:
         # Step 1: Split CSV into chunks
         logger.info(f"Splitting CSV into chunks for job {job_id}")
         redis_client.set(redis_key, json.dumps({
@@ -469,7 +396,7 @@ def process_csv_import(self, file_source: str, job_id: str, use_cloudinary: bool
             "progress": 0
         }))
         
-        chunks, total_rows, initial_errors, chunk_size_used = _split_csv_into_chunks(str(file_path_obj))
+        chunks, total_rows, initial_errors, chunk_size_used = _split_csv_into_chunks(local_file_path)
         
         if total_rows == 0:
             redis_client.set(redis_key, json.dumps({
@@ -515,8 +442,8 @@ def process_csv_import(self, file_source: str, job_id: str, use_cloudinary: bool
         
         # Update status to show chunks are being processed
         try:
-                                redis_client.set(redis_key, json.dumps({
-                                    "status": "processing",
+            redis_client.set(redis_key, json.dumps({
+                "status": "processing",
                 "message": f"Processing {total_chunks:,} chunks in parallel ({total_rows:,} rows)...",
                 "progress": 5
             }))
@@ -651,14 +578,16 @@ def process_csv_import(self, file_source: str, job_id: str, use_cloudinary: bool
             "message": f"Fatal error: {str(e)}",
             "progress": 0
         }
-        redis_client.set(redis_key, json.dumps(fail_payload))
+        if redis_client:
+            redis_client.set(redis_key, json.dumps(fail_payload))
         
         # Clean up chunk tracking
         try:
-            redis_client.delete(f"job:{job_id}:chunks")
-            redis_client.delete(f"job:{job_id}:completed_count")
-            redis_client.delete(f"job:{job_id}:total_chunks")
-            redis_client.delete(f"job:{job_id}:total_rows")
+            if redis_client:
+                redis_client.delete(f"job:{job_id}:chunks")
+                redis_client.delete(f"job:{job_id}:completed_count")
+                redis_client.delete(f"job:{job_id}:total_chunks")
+                redis_client.delete(f"job:{job_id}:total_rows")
         except Exception:
             pass
         
@@ -677,15 +606,102 @@ def process_csv_import(self, file_source: str, job_id: str, use_cloudinary: bool
         finally:
             if db:
                 db.close()
-        
+    
     finally:
-        # Clean up temp file
-        if file_path_obj and file_path_obj.exists():
+        # --- MOVED FROM process_csv_import ---
+        # This task is the *last* one to touch the file,
+        # so it is responsible for cleaning it up.
+        if local_file_path:
             try:
-                file_path_obj.unlink()
-                logger.info(f"Cleaned up temporary file: {file_path_obj}")
+                Path(local_file_path).unlink(missing_ok=True)
+                logger.info(f"Cleaned up temporary file: {local_file_path}")
             except Exception as e:
                 logger.error(f"Failed to delete temp file: {e}")
+
+
+@celery_app.task(
+    bind=True,
+    autoretry_for=(
+        ResponseError,
+        RedisConnectionError,
+        RedisTimeoutError,
+        TimeoutError,
+    ),  # Note: Removed DB errors, as this task doesn't touch the DB
+    retry_kwargs={'max_retries': 3, 'countdown': 5},
+    retry_backoff=True,
+    retry_backoff_max=60,
+    retry_jitter=True,
+)
+def process_csv_import(self, file_url: str, job_id: str):
+    """
+    (Task 1) Download CSV file from Cloudinary and trigger the orchestrator.
+    This task only downloads the file and chains to the orchestrator task.
+    
+    Args:
+        file_url: Cloudinary URL of the uploaded CSV file
+        job_id: Unique job identifier
+    """
+    logger.info(f"Starting import from URL: {file_url}, job_id={job_id}")
+    
+    redis_client = None
+    redis_key = f"job:{job_id}"
+    local_file_path = None
+
+    try:
+        redis_client = _get_redis_client_with_retry()
         
-        # Don't close redis_client - it uses a shared connection pool
-        # The pool manages connections automatically
+        # Immediately update status to show task has started
+        _redis_operation_with_retry(
+            lambda: redis_client.set(redis_key, json.dumps({
+                "status": "processing",
+                "message": "Task started, downloading file...",
+                "progress": 0
+            }))
+        )
+    except Exception as e:
+        logger.error(f"Failed to create Redis client: {e}")
+        raise  # Let Celery retry
+    
+    # Download file from Cloudinary
+    try:
+        # Create a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
+            local_file_path = temp_file.name
+            
+            logger.info(f"Downloading file from Cloudinary to {local_file_path}")
+            with httpx.stream("GET", file_url, timeout=300.0) as response:
+                response.raise_for_status()  # Check for download errors
+                for chunk in response.iter_bytes():
+                    temp_file.write(chunk)
+            
+            logger.info("Download complete.")
+            
+        # --- SUCCESS: CHAIN TO THE NEXT TASK ---
+        # Instead of calling the function, we dispatch the new task
+        run_parallel_import_task.delay(local_file_path, job_id)
+        # This task is now FINISHED and the worker is freed.
+            
+    except Exception as e:
+        # --- DOWNLOAD FAILED ---
+        error_msg = f"Failed to download file from Cloudinary: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        if redis_client:
+            redis_client.set(redis_key, json.dumps({
+                "status": "failed",
+                "message": error_msg,
+                "progress": 0
+            }))
+            
+        # If download fails, we *must* clean up the temp file
+        if local_file_path:
+            try:
+                Path(local_file_path).unlink(missing_ok=True)
+                logger.info(f"Cleaned up failed download: {local_file_path}")
+            except Exception as e_clean:
+                logger.error(f"Failed to delete temp file after error: {e_clean}")
+        
+        # Re-raise the exception to trigger Celery retry
+        raise
+    
+    # --- REMOVED THE 'finally' BLOCK ---
+    # The new `run_parallel_import_task` is now responsible for cleanup.

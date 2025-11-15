@@ -746,6 +746,10 @@ fileDropZone.addEventListener('drop', (e) => {
 document.getElementById('upload-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     
+    // CRITICAL: Ensure we never use the old /upload/csv endpoint
+    // The old endpoint is disabled and will fail with 413 for files > 4.5MB on Vercel
+    console.log('Upload form submitted - using new Cloudinary upload flow');
+    
     const fileInput = document.getElementById('file-input');
     let file = fileInput.files[0];
     
@@ -788,9 +792,15 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
     
     try {
         // Step 1: Initialize upload and get Cloudinary credentials
+        // IMPORTANT: We use /upload/csv/init, NOT /upload/csv
+        // The old /upload/csv endpoint is disabled and will fail with 413 for large files
         statusDiv.textContent = 'Initializing upload...';
+        console.log('Calling /upload/csv/init (new endpoint)');
         const initResult = await fetch('/upload/csv/init', {
-            method: 'POST'
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
         });
         
         if (!initResult.ok) {
@@ -838,6 +848,7 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
             
             const cloudinaryData = await cloudinaryResult.json();
             fileUrl = cloudinaryData.secure_url || cloudinaryData.url;
+            const publicId = cloudinaryData.public_id || cloudinaryConfig.public_id;
             
             // Step 3: Notify backend that upload is complete
             statusDiv.textContent = 'Finalizing upload...';
@@ -848,7 +859,8 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
                 },
                 body: JSON.stringify({
                     job_id: jobId,
-                    file_url: fileUrl
+                    file_url: fileUrl,
+                    public_id: publicId
                 })
             });
             
@@ -952,15 +964,21 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         
     } catch (error) {
         console.error('Error uploading file:', error);
+        console.error('Error details:', {
+            message: error.message,
+            stack: error.stack,
+            name: error.name
+        });
         
         // Provide more helpful error messages for 413 errors
         let errorMessage = error.message;
-        if (error.message.includes('413') || error.message.includes('Payload Too Large') || error.message.includes('Request Entity Too Large')) {
-            errorMessage = 'File is too large for upload. The system is configured to upload directly to Cloudinary to bypass Vercel\'s 4.5MB limit, but the request still failed. Please check:\n\n' +
-                '1. Cloudinary credentials are properly configured\n' +
-                '2. The file is not corrupted\n' +
-                '3. Your network connection is stable\n\n' +
-                'If the problem persists, try uploading a smaller file or contact support.';
+        if (error.message.includes('413') || error.message.includes('Payload Too Large') || error.message.includes('Request Entity Too Large') || error.message.includes('/upload/csv')) {
+            errorMessage = 'ERROR: The old /upload/csv endpoint was called, which is disabled.\n\n' +
+                'This usually means:\n' +
+                '1. Your browser has cached an old version of the page\n' +
+                '2. Please do a HARD REFRESH (Ctrl+Shift+R or Cmd+Shift+R)\n' +
+                '3. Or clear your browser cache and reload the page\n\n' +
+                'The new upload flow uses /upload/csv/init and uploads directly to Cloudinary, bypassing Vercel\'s 4.5MB limit.';
         }
         
         alert('Failed to upload file: ' + errorMessage);
