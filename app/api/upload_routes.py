@@ -159,129 +159,25 @@ async def complete_csv_upload(request: CompleteUploadRequest):
 @router.post("/csv")
 async def upload_csv(file: UploadFile = File(...)):
     """
-    Upload a CSV file for processing.
+    DEPRECATED: This endpoint is disabled due to Vercel's 4.5MB request body limit.
     
-    WARNING: This endpoint is deprecated for large files due to Vercel's 4.5MB limit.
-    Use /upload/csv/init instead for files larger than 4MB.
+    This endpoint will return 410 Gone. Please use /upload/csv/init instead, which
+    uploads files directly to Cloudinary, bypassing Vercel's size limits.
+    
+    The new flow:
+    1. POST /upload/csv/init - Get Cloudinary upload credentials
+    2. Upload file directly to Cloudinary using the provided credentials
+    3. POST /upload/csv/complete - Notify backend that upload is complete
     """
-    # Validate file extension
-    if not file.filename.endswith('.csv'):
-        raise HTTPException(status_code=400, detail="File must be a CSV file")
-    
-    # Check file size early to provide better error message
-    # Note: Vercel has a hard 4.5MB limit that cannot be changed
-    # We can't read the full file to check size without hitting the limit,
-    # but we can provide a better error message if it fails
-    
-    # Generate unique job_id
-    job_id = uuid.uuid4()
-    
-    # Initialize job status in Redis
-    try:
-        import redis
-        client = redis.from_url(
-            settings.REDIS_URL,
-            ssl_cert_reqs=ssl.CERT_NONE if "rediss" in settings.REDIS_URL else None
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "This endpoint is deprecated and disabled. "
+            "Files larger than 4.5MB will fail on Vercel. "
+            "Please use the new upload flow: POST /upload/csv/init to get Cloudinary credentials, "
+            "then upload directly to Cloudinary, then POST /upload/csv/complete to finalize."
         )
-        client.set(f"job:{job_id}", json.dumps({
-            "status": "queued",
-            "message": "Uploading file...",
-            "progress": 0
-        }))
-        client.close()
-    except Exception:
-        pass
-    
-    # Upload to Cloudinary if configured, otherwise use base64 fallback
-    file_url = None
-    file_content_b64 = None
-    
-    if settings.CLOUDINARY_CLOUD_NAME and settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET:
-        # Upload to Cloudinary for large files
-        try:
-            # Read file content
-            # Note: This will fail with 413 if file is > 4.5MB on Vercel
-            file_content = await file.read()
-            
-            # Upload to Cloudinary with a unique public_id
-            # Use BytesIO to create a file-like object for Cloudinary
-            file_like = io.BytesIO(file_content)
-            upload_result = cloudinary.uploader.upload(
-                file_like,
-                resource_type="raw",
-                public_id=f"csv_imports/{job_id}",
-                folder="csv_imports",
-                overwrite=True,
-                use_filename=False
-            )
-            file_url = upload_result.get("secure_url") or upload_result.get("url")
-            
-            # Update status
-            try:
-                import redis
-                client = redis.from_url(
-                    settings.REDIS_URL,
-                    ssl_cert_reqs=ssl.CERT_NONE if "rediss" in settings.REDIS_URL else None
-                )
-                client.set(f"job:{job_id}", json.dumps({
-                    "status": "queued",
-                    "message": "File uploaded to cloud, queuing for processing...",
-                    "progress": 0
-                }))
-                client.close()
-            except Exception:
-                pass
-                
-        except HTTPException:
-            # Re-raise HTTP exceptions (like 413) as-is
-            raise
-        except Exception as e:
-            # For other errors, check if it's a size-related error
-            error_str = str(e).lower()
-            if '413' in error_str or 'payload too large' in error_str or 'request entity too large' in error_str:
-                raise HTTPException(
-                    status_code=413,
-                    detail="File is too large for direct upload. Please use the /upload/csv/init endpoint which uploads directly to Cloudinary, bypassing Vercel's 4.5MB limit."
-                )
-            # Fall back to base64 if Cloudinary upload fails for other reasons
-            await file.seek(0)
-            file_content = await file.read()
-            file_content_b64 = base64.b64encode(file_content).decode('utf-8')
-    else:
-        # Fallback to base64 encoding if Cloudinary is not configured
-        # This will fail for files > 4.5MB on Vercel
-        try:
-            file_content = await file.read()
-            file_content_b64 = base64.b64encode(file_content).decode('utf-8')
-        except HTTPException:
-            raise
-        except Exception as e:
-            error_str = str(e).lower()
-            if '413' in error_str or 'payload too large' in error_str or 'request entity too large' in error_str:
-                raise HTTPException(
-                    status_code=413,
-                    detail="File is too large (Vercel limit: 4.5MB). Cloudinary is not configured. Please set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET environment variables to enable large file uploads."
-                )
-            raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
-    
-    # Import and call the Celery task
-    try:
-        from app.services.importer import process_csv_import
-        if file_url:
-            # Pass Cloudinary URL to task
-            process_csv_import.delay(file_url, str(job_id), use_cloudinary=True)
-        else:
-            # Pass base64 content (fallback)
-            process_csv_import.delay(file_content_b64, str(job_id), use_cloudinary=False)
-    except ImportError:
-        raise HTTPException(
-            status_code=500,
-            detail="Import task not available. Please ensure the task is defined."
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to queue task: {str(e)}")
-    
-    return {"job_id": str(job_id), "message": "File uploaded and processing started"}
+    )
 
 
 @router.get("/progress/{job_id}")
