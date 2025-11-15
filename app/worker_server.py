@@ -46,7 +46,10 @@ def run_celery_worker():
 def main():
     """Main entry point."""
     # Get port from environment variable (required by Render)
+    # Render dynamically assigns a port via the PORT environment variable
     port = int(os.environ.get('PORT', 10000))
+    print(f"PORT environment variable: {os.environ.get('PORT', 'not set (using default 10000)')}", flush=True)
+    print(f"Starting HTTP server on 0.0.0.0:{port}", flush=True)
     
     # Store celery process for cleanup
     celery_process_container = {'process': None}
@@ -71,10 +74,12 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     
     # Start HTTP server immediately (this is what Render checks for)
-    print(f"Starting HTTP server on 0.0.0.0:{port}", flush=True)
+    # Must bind to 0.0.0.0 (all interfaces) not 127.0.0.1 (localhost only)
+    
     try:
         server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-        print(f"HTTP server listening on 0.0.0.0:{port}", flush=True)
+        print(f"HTTP server successfully bound to 0.0.0.0:{port}", flush=True)
+        print(f"Server is ready and listening for connections", flush=True)
         sys.stdout.flush()
         server.serve_forever()
     except KeyboardInterrupt:
