@@ -7,9 +7,9 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from threading import Thread
 
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -27,21 +27,17 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         pass
 
 
-def run_http_server(port):
-    """Run a simple HTTP server on the specified port."""
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    print(f"HTTP server started on port {port}")
-    server.serve_forever()
-
-
 def run_celery_worker():
-    """Run the Celery worker."""
-    print("Starting Celery worker...")
+    """Run the Celery worker in a separate process."""
+    print("Starting Celery worker...", flush=True)
+    # Get concurrency from environment or use default
+    concurrency = os.environ.get('CELERY_CONCURRENCY', '2')
     cmd = [
         sys.executable, '-m', 'celery',
         '-A', 'app.worker.celery_app',
         'worker',
-        '--loglevel=info'
+        '--loglevel=info',
+        f'--concurrency={concurrency}'
     ]
     process = subprocess.Popen(cmd)
     return process
@@ -49,26 +45,43 @@ def run_celery_worker():
 
 def main():
     """Main entry point."""
+    # Get port from environment variable (required by Render)
     port = int(os.environ.get('PORT', 10000))
     
-    # Start Celery worker
-    celery_process = run_celery_worker()
+    # Store celery process for cleanup
+    celery_process_container = {'process': None}
+    
+    def start_celery():
+        """Start Celery worker after a short delay."""
+        time.sleep(2)  # Give HTTP server time to start first
+        celery_process_container['process'] = run_celery_worker()
+    
+    celery_thread = threading.Thread(target=start_celery, daemon=True)
+    celery_thread.start()
     
     # Handle shutdown signals
     def signal_handler(sig, frame):
-        print("\nShutting down...")
-        celery_process.terminate()
-        celery_process.wait()
+        print("\nShutting down...", flush=True)
+        if celery_process_container['process']:
+            celery_process_container['process'].terminate()
+            celery_process_container['process'].wait()
         sys.exit(0)
     
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
-    # Start HTTP server in main thread
+    # Start HTTP server immediately (this is what Render checks for)
+    print(f"Starting HTTP server on 0.0.0.0:{port}", flush=True)
     try:
-        run_http_server(port)
+        server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+        print(f"HTTP server listening on 0.0.0.0:{port}", flush=True)
+        sys.stdout.flush()
+        server.serve_forever()
     except KeyboardInterrupt:
         signal_handler(None, None)
+    except Exception as e:
+        print(f"Error starting HTTP server: {e}", flush=True)
+        sys.exit(1)
 
 
 if __name__ == '__main__':

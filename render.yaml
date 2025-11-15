@@ -35,6 +35,8 @@ services:
           name: product-importer-redis
           type: redis
           property: connectionString
+      - key: CELERY_CONCURRENCY
+        value: "4"
     healthCheckPath: /
 
   # Redis private service
