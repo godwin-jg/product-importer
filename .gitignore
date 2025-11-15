@@ -147,3 +147,5 @@ cython_debug/
 *.db
 *.sqlite
 
+.vercel
+.env*.local

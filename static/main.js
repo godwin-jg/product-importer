@@ -748,7 +748,7 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
     
     // CRITICAL: Ensure we never use the old /upload/csv endpoint
     // The old endpoint is disabled and will fail with 413 for files > 4.5MB on Vercel
-    console.log('Upload form submitted - using new Cloudinary upload flow');
+    console.log('Upload form submitted - using new Vercel Blob upload flow');
     
     const fileInput = document.getElementById('file-input');
     let file = fileInput.files[0];
@@ -768,7 +768,7 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         return;
     }
     
-    // Check file size and warn if it's very large (though Cloudinary should handle it)
+    // Check file size and warn if it's very large (Vercel Blob supports up to 500MB on free tier)
     const fileSizeMB = file.size / (1024 * 1024);
     if (fileSizeMB > 100) {
         if (!confirm(`Warning: The file is ${fileSizeMB.toFixed(2)}MB. Large files may take a while to upload. Continue?`)) {
@@ -791,7 +791,7 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
     uploadBtn.disabled = true;
     
     try {
-        // Step 1: Initialize upload and get Cloudinary credentials
+        // Step 1: Initialize upload and get Vercel Blob credentials
         // IMPORTANT: We use /upload/csv/init, NOT /upload/csv
         // The old /upload/csv endpoint is disabled and will fail with 413 for large files
         statusDiv.textContent = 'Initializing upload...';
@@ -814,64 +814,63 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         
         const initData = await initResult.json();
         const jobId = initData.job_id;
-        const cloudinaryConfig = initData.cloudinary;
+        const blobToken = initData.blob_token;
+        const filename = initData.filename;
+        const uploadEndpoint = initData.upload_endpoint;
         
         let fileUrl = null;
         
-        // Step 2: Upload to Cloudinary if configured
-        // IMPORTANT: Without Cloudinary, large files will fail on Vercel due to 4.5MB limit
-        if (!cloudinaryConfig) {
-            throw new Error('Cloudinary is not configured. Large file uploads require Cloudinary to bypass Vercel size limits. Please configure CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET environment variables.');
+        // Step 2: Upload to Vercel Blob if configured
+        // IMPORTANT: Without Vercel Blob, large files will fail on Vercel due to 4.5MB limit
+        if (!blobToken) {
+            throw new Error('Vercel Blob is not configured. Large file uploads require BLOB_READ_WRITE_TOKEN environment variable.');
         }
         
-        if (cloudinaryConfig) {
-            // Upload directly to Cloudinary (bypasses Vercel size limits)
-            statusDiv.textContent = 'Uploading to cloud...';
-            const cloudinaryFormData = new FormData();
-            cloudinaryFormData.append('file', file);
-            cloudinaryFormData.append('api_key', cloudinaryConfig.api_key);
-            cloudinaryFormData.append('timestamp', cloudinaryConfig.timestamp);
-            cloudinaryFormData.append('signature', cloudinaryConfig.signature);
-            cloudinaryFormData.append('folder', cloudinaryConfig.folder);
-            cloudinaryFormData.append('public_id', cloudinaryConfig.public_id);
-            cloudinaryFormData.append('resource_type', 'raw');
-            
-            const cloudinaryResult = await fetch(cloudinaryConfig.upload_url, {
-                method: 'POST',
-                body: cloudinaryFormData
-            });
-            
-            if (!cloudinaryResult.ok) {
-                const errorText = await cloudinaryResult.text();
-                throw new Error(`Cloudinary upload failed: ${errorText}`);
+        // Upload directly to Vercel Blob (bypasses Vercel size limits)
+        statusDiv.textContent = 'Uploading to cloud...';
+        
+        const blobResult = await fetch(uploadEndpoint, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${blobToken}`,
+                'x-content-type': 'text/csv',
+                'x-pathname': filename,
+            },
+            body: file
+        });
+        
+        if (!blobResult.ok) {
+            const errorText = await blobResult.text();
+            throw new Error(`Vercel Blob upload failed: ${errorText}`);
+        }
+        
+        const blobData = await blobResult.json();
+        fileUrl = blobData.url;
+        
+        if (!fileUrl) {
+            throw new Error('Vercel Blob did not return a file URL');
+        }
+        
+        // Step 3: Notify backend that upload is complete
+        statusDiv.textContent = 'Finalizing upload...';
+        const completeResult = await fetch('/upload/csv/complete', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                job_id: jobId,
+                file_url: fileUrl
+            })
+        });
+        
+        if (!completeResult.ok) {
+            // Handle 413 errors specifically
+            if (completeResult.status === 413) {
+                throw new Error('The completion request exceeded Vercel\'s 4.5MB limit. This is unexpected - the file should have been uploaded directly to Vercel Blob. Please check that Vercel Blob upload succeeded and try again.');
             }
-            
-            const cloudinaryData = await cloudinaryResult.json();
-            fileUrl = cloudinaryData.secure_url || cloudinaryData.url;
-            const publicId = cloudinaryData.public_id || cloudinaryConfig.public_id;
-            
-            // Step 3: Notify backend that upload is complete
-            statusDiv.textContent = 'Finalizing upload...';
-            const completeResult = await fetch('/upload/csv/complete', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    job_id: jobId,
-                    file_url: fileUrl,
-                    public_id: publicId
-                })
-            });
-            
-            if (!completeResult.ok) {
-                // Handle 413 errors specifically
-                if (completeResult.status === 413) {
-                    throw new Error('The completion request exceeded Vercel\'s 4.5MB limit. This is unexpected - the file should have been uploaded directly to Cloudinary. Please check that Cloudinary upload succeeded and try again.');
-                }
-                const errorData = await completeResult.json().catch(() => ({ detail: `HTTP error! status: ${completeResult.status}` }));
-                throw new Error(errorData.detail || `HTTP error! status: ${completeResult.status}`);
-            }
+            const errorData = await completeResult.json().catch(() => ({ detail: `HTTP error! status: ${completeResult.status}` }));
+            throw new Error(errorData.detail || `HTTP error! status: ${completeResult.status}`);
         }
         
         const eventSource = new EventSource(`/upload/progress/${jobId}`);
@@ -978,7 +977,7 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
                 '1. Your browser has cached an old version of the page\n' +
                 '2. Please do a HARD REFRESH (Ctrl+Shift+R or Cmd+Shift+R)\n' +
                 '3. Or clear your browser cache and reload the page\n\n' +
-                'The new upload flow uses /upload/csv/init and uploads directly to Cloudinary, bypassing Vercel\'s 4.5MB limit.';
+                'The new upload flow uses /upload/csv/init and uploads directly to Vercel Blob, bypassing Vercel\'s 4.5MB limit.';
         }
         
         alert('Failed to upload file: ' + errorMessage);

@@ -7,10 +7,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     REDIS_URL: str
     
-    # Cloudinary settings (optional - if not provided, falls back to base64)
-    CLOUDINARY_CLOUD_NAME: str | None = None
-    CLOUDINARY_API_KEY: str | None = None
-    CLOUDINARY_API_SECRET: str | None = None
+    # Vercel Blob settings (required for large file uploads)
+    BLOB_READ_WRITE_TOKEN: str | None = None
     
     # Celery worker settings (optional)
     CELERY_CONCURRENCY: str | None = None

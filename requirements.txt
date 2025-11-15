@@ -8,6 +8,5 @@ redis
 python-multipart
 pydantic-settings
 httpx
-cloudinary
 mangum
 

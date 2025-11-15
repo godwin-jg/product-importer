@@ -2,29 +2,14 @@ import asyncio
 import json
 import ssl
 import uuid
-import time
 import httpx  # For downloading the file in the importer
 
-import cloudinary
-import cloudinary.uploader
-import cloudinary.utils
 import redis.asyncio as aioredis  # Use async redis
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.core.config import settings
-
-# Configure Cloudinary
-if settings.CLOUDINARY_CLOUD_NAME and settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET:
-    cloudinary.config(
-        cloud_name=settings.CLOUDINARY_CLOUD_NAME,
-        api_key=settings.CLOUDINARY_API_KEY,
-        api_secret=settings.CLOUDINARY_API_SECRET
-    )
-else:
-    # Log a warning or raise an error if not configured
-    print("WARNING: Cloudinary is not configured. File uploads will fail.")
 
 
 router = APIRouter(prefix="/upload", tags=["upload"])
@@ -33,19 +18,18 @@ router = APIRouter(prefix="/upload", tags=["upload"])
 class CompleteUploadRequest(BaseModel):
     """Request model for completing CSV upload."""
     job_id: str
-    file_url: str  # The secure_url returned by Cloudinary
-    public_id: str  # The public_id used for the upload
+    file_url: str  # The blob URL returned by Vercel Blob
 
 
 @router.post("/csv/init")
 async def init_csv_upload():
     """
-    Initialize a CSV upload by generating a job_id and Cloudinary upload signature.
-    This allows direct client-side upload to Cloudinary, bypassing Vercel's size limits.
+    Initialize a CSV upload by generating a job_id and Vercel Blob upload URL.
+    This allows direct client-side upload to Vercel Blob, bypassing Vercel's size limits.
     """
     job_id = str(uuid.uuid4())
     
-    # --- FIX 1: Use aioredis for async operation ---
+    # Use aioredis for async operation
     redis_client = None
     try:
         redis_client = aioredis.from_url(
@@ -65,42 +49,26 @@ async def init_csv_upload():
         if redis_client:
             await redis_client.aclose()
     
-    # If Cloudinary is configured, generate upload signature for direct client upload
-    if not (settings.CLOUDINARY_CLOUD_NAME and settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET):
+    # Check if Vercel Blob is configured
+    if not settings.BLOB_READ_WRITE_TOKEN:
         raise HTTPException(
             status_code=500,
-            detail="Cloudinary is not configured. Large file uploads require Cloudinary credentials."
+            detail="Vercel Blob is not configured. Large file uploads require BLOB_READ_WRITE_TOKEN environment variable."
         )
 
     try:
-        # --- FIX 2: Use Cloudinary's official util to create the signature ---
-        timestamp = int(time.time())
-        public_id = f"csv_imports/{job_id}"
+        # Generate a unique filename for the blob
+        filename = f"csv_imports/{job_id}.csv"
         
-        # Parameters to be signed
-        params_to_sign = {
-            'folder': 'csv_imports',
-            'public_id': public_id,
-            'timestamp': timestamp,
-        }
-
-        # Use the official utility to generate the signature
-        signature = cloudinary.utils.api_sign_request(
-            params_to_sign, 
-            settings.CLOUDINARY_API_SECRET
-        )
-        
+        # Return the token and filename for client-side upload
+        # The frontend will use @vercel/blob SDK or direct REST API call
+        # Note: In production, consider using a more secure approach like
+        # generating temporary tokens or using serverless functions
         return {
             "job_id": job_id,
-            "cloudinary": {
-                "cloud_name": settings.CLOUDINARY_CLOUD_NAME,
-                "api_key": settings.CLOUDINARY_API_KEY,
-                "timestamp": timestamp,
-                "signature": signature,
-                "folder": "csv_imports",
-                "public_id": public_id,
-                "upload_url": f"https://api.cloudinary.com/v1_1/{settings.CLOUDINARY_CLOUD_NAME}/raw/upload"
-            }
+            "blob_token": settings.BLOB_READ_WRITE_TOKEN,
+            "filename": filename,
+            "upload_endpoint": "https://blob.vercel-storage.com/put"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to initialize upload: {str(e)}")
@@ -109,13 +77,13 @@ async def init_csv_upload():
 @router.post("/csv/complete")
 async def complete_csv_upload(request: CompleteUploadRequest):
     """
-    Complete the CSV upload process after file has been uploaded to Cloudinary.
-    This endpoint is called after the client successfully uploads to Cloudinary.
+    Complete the CSV upload process after file has been uploaded to Vercel Blob.
+    This endpoint is called after the client successfully uploads to Vercel Blob.
     """
     job_id = request.job_id
     file_url = request.file_url
     
-    # --- FIX 1: Use aioredis for async operations ---
+    # Use aioredis for async operations
     redis_client = None
     try:
         redis_client = aioredis.from_url(
@@ -148,7 +116,6 @@ async def complete_csv_upload(request: CompleteUploadRequest):
     # Start processing
     try:
         from app.services.importer import process_csv_import
-        # --- FIX 3: Pass the file_url. The task no longer needs 'use_cloudinary=True' ---
         process_csv_import.delay(file_url, job_id)
         
     except ImportError:
@@ -173,7 +140,7 @@ async def upload_csv(file: UploadFile = File(...)):
             "This endpoint is deprecated and disabled. "
             "Files larger than 4.5MB will fail on Vercel. "
             "Please use the new upload flow: POST /upload/csv/init, "
-            "upload to Cloudinary, then POST /upload/csv/complete."
+            "upload to Vercel Blob, then POST /upload/csv/complete."
         )
     )
 
