@@ -1,4 +1,4 @@
-import base64
+# base64 import removed - we now download files directly from URLs
 import csv
 import json
 import logging
@@ -634,11 +634,11 @@ def run_parallel_import_task(self, local_file_path: str, job_id: str):
 )
 def process_csv_import(self, file_url: str, job_id: str):
     """
-    (Task 1) Download CSV file from Cloudinary and trigger the orchestrator.
+    (Task 1) Download CSV file from Vercel Blob and trigger the orchestrator.
     This task only downloads the file and chains to the orchestrator task.
     
     Args:
-        file_url: Cloudinary URL of the uploaded CSV file
+        file_url: Vercel Blob URL of the uploaded CSV file
         job_id: Unique job identifier
     """
     logger.info(f"Starting import from URL: {file_url}, job_id={job_id}")
@@ -668,7 +668,7 @@ def process_csv_import(self, file_url: str, job_id: str):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
             local_file_path = temp_file.name
             
-            logger.info(f"Downloading file from Cloudinary to {local_file_path}")
+            logger.info(f"Downloading file from Vercel Blob to {local_file_path}")
             with httpx.stream("GET", file_url, timeout=300.0) as response:
                 response.raise_for_status()  # Check for download errors
                 for chunk in response.iter_bytes():
@@ -683,7 +683,7 @@ def process_csv_import(self, file_url: str, job_id: str):
             
     except Exception as e:
         # --- DOWNLOAD FAILED ---
-        error_msg = f"Failed to download file from Cloudinary: {str(e)}"
+        error_msg = f"Failed to download file from Vercel Blob: {str(e)}"
         logger.error(error_msg, exc_info=True)
         if redis_client:
             redis_client.set(redis_key, json.dumps({

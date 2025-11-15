@@ -827,14 +827,14 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         }
         
         // Upload directly to Vercel Blob (bypasses Vercel size limits)
+        // The pathname is included in the URL to avoid CORS issues with custom headers
         statusDiv.textContent = 'Uploading to cloud...';
         
         const blobResult = await fetch(uploadEndpoint, {
             method: 'PUT',
             headers: {
                 'Authorization': `Bearer ${blobToken}`,
-                'x-content-type': 'text/csv',
-                'x-pathname': filename,
+                'Content-Type': 'text/csv',
             },
             body: file
         });

@@ -61,14 +61,15 @@ async def init_csv_upload():
         filename = f"csv_imports/{job_id}.csv"
         
         # Return the token and filename for client-side upload
-        # The frontend will use @vercel/blob SDK or direct REST API call
+        # The frontend will upload directly to Vercel Blob
         # Note: In production, consider using a more secure approach like
         # generating temporary tokens or using serverless functions
+        # The pathname goes in the URL path to avoid CORS issues with custom headers
         return {
             "job_id": job_id,
             "blob_token": settings.BLOB_READ_WRITE_TOKEN,
             "filename": filename,
-            "upload_endpoint": "https://blob.vercel-storage.com/put"
+            "upload_endpoint": f"https://blob.vercel-storage.com/put/{filename}"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to initialize upload: {str(e)}")
