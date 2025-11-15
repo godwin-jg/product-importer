@@ -53,6 +53,22 @@ class WebhookUpdate(BaseModel):
     event_type: str | None = None
     is_active: bool | None = None
 
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, v: str | None) -> str | None:
+        """Reuse the validation logic from WebhookBase, but allow None."""
+        if v is None:
+            return None
+        return WebhookBase.validate_url(v)  # Reuse the validator
+
+    @field_validator("event_type")
+    @classmethod
+    def validate_event_type(cls, v: str | None) -> str | None:
+        """Reuse the validation logic from WebhookBase, but allow None."""
+        if v is None:
+            return None
+        return WebhookBase.validate_event_type(v)  # Reuse the validator
+
 
 class Webhook(WebhookBase):
     id: int

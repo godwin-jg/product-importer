@@ -38,22 +38,19 @@ async def upload_csv(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
     
+    # Initialize job status in Redis
     try:
         import redis
-        redis_key = f"job:{job_id}"
-        initial_redis_client = redis.from_url(
+        client = redis.from_url(
             settings.REDIS_URL,
             ssl_cert_reqs=ssl.CERT_NONE if "rediss" in settings.REDIS_URL else None
         )
-        initial_redis_client.set(
-            redis_key,
-            json.dumps({
-                "status": "queued",
-                "message": "File uploaded, queuing for processing...",
-                "progress": 0
-            })
-        )
-        initial_redis_client.close()
+        client.set(f"job:{job_id}", json.dumps({
+            "status": "queued",
+            "message": "File uploaded, queuing for processing...",
+            "progress": 0
+        }))
+        client.close()
     except Exception:
         pass
     
@@ -84,6 +81,24 @@ async def upload_progress(job_id: str):
             ssl_cert_reqs=ssl.CERT_NONE if "rediss" in settings.REDIS_URL else None
         )
         last_progress = -1
+        last_status = None
+        last_message = None
+        
+        # Send initial status immediately
+        try:
+            initial_data = await redis_client.get(f"job:{job_id}")
+            if initial_data:
+                initial_data_str = initial_data.decode('utf-8') if isinstance(initial_data, bytes) else str(initial_data)
+                try:
+                    initial_json = json.loads(initial_data_str)
+                    yield f"data: {initial_data_str}\n\n"
+                    last_progress = initial_json.get("progress", 0)
+                    last_status = initial_json.get("status", "unknown")
+                    last_message = initial_json.get("message", "")
+                except json.JSONDecodeError:
+                    yield f"data: {initial_data_str}\n\n"
+        except Exception:
+            pass
         
         try:
             while True:
@@ -97,10 +112,18 @@ async def upload_progress(job_id: str):
                         data = json.loads(redis_data_str)
                         status = data.get("status", "unknown")
                         progress = data.get("progress", 0)
+                        message = data.get("message", "")
                         
-                        if progress != last_progress or status in ["complete", "failed"]:
+                        # Send update if progress, status, or message changed
+                        progress_changed = progress != last_progress
+                        status_changed = status != last_status
+                        message_changed = message != last_message
+                        
+                        if progress_changed or status_changed or message_changed or status in ["complete", "failed"]:
                             yield f"data: {redis_data_str}\n\n"
                             last_progress = progress
+                            last_status = status
+                            last_message = message
                         
                         if status in ["complete", "failed"]:
                             break
@@ -109,7 +132,9 @@ async def upload_progress(job_id: str):
                         if redis_data_str in ["complete", "failed"]:
                             break
                 else:
-                    yield f"data: {json.dumps({'status': 'pending', 'message': 'Job not found or not started'})}\n\n"
+                    # Job not found - send last known status
+                    if last_status:
+                        yield f"data: {json.dumps({'status': last_status, 'message': last_message, 'progress': last_progress})}\n\n"
                 
                 await asyncio.sleep(0.3)
         

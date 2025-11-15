@@ -4,6 +4,18 @@ let editingProductId = null;
 let currentPage = 1;
 const itemsPerPage = 10;
 
+// Search optimization: debouncing and request cancellation
+let searchDebounceTimer = null;
+let currentSearchAbortController = null;
+const SEARCH_DEBOUNCE_MS = 400; // Wait 400ms after user stops typing
+const MIN_SEARCH_LENGTH = 2; // Minimum characters before searching
+
+// Prefetching: cache for next page data
+let prefetchCache = null;
+let prefetchAbortController = null;
+let currentQueryKey = null; // Track current query to invalidate cache on filter changes
+let isLoadMoreMode = false; // Track if we're in "Load More" mode (when totalPages === null)
+
 // Modal functions
 function openModal(modalId) {
     document.getElementById(modalId).classList.add('show');
@@ -13,20 +25,189 @@ function closeModal(modalId) {
     document.getElementById(modalId).classList.remove('show');
 }
 
-// Fetch and display products with server-side pagination
-async function fetchProducts() {
+// Show loading state
+function showLoadingState() {
+    const tbody = document.querySelector('#products-table tbody');
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 20px;"><div class="loading-spinner"></div><div style="margin-top: 10px;">Loading products...</div></td></tr>';
+    
+    // Add loading indicator to search input (CSS handles the styling)
+    const searchInput = document.getElementById('search-input');
+    searchInput.classList.add('search-loading');
+}
+
+// Hide loading state
+function hideLoadingState() {
+    const searchInput = document.getElementById('search-input');
+    searchInput.classList.remove('search-loading');
+}
+
+// Generate query key for cache invalidation
+function getQueryKey(page) {
+    const searchTerm = document.getElementById('search-input').value.trim();
+    const searchType = document.getElementById('search-type-filter').value;
+    const statusFilter = document.getElementById('status-filter').value;
+    const skip = (page - 1) * itemsPerPage;
+    
+    const params = new URLSearchParams();
+    params.append('skip', skip);
+    params.append('limit', itemsPerPage);
+    
+    if (searchTerm && searchTerm.length >= MIN_SEARCH_LENGTH) {
+        params.append('search', searchTerm);
+        params.append('search_type', searchType || 'sku');
+    }
+    if (statusFilter) {
+        params.append('active', statusFilter === 'true');
+    }
+    
+    return params.toString();
+}
+
+// Prefetch next page in background
+async function prefetchNextPage() {
+    // Cancel any existing prefetch
+    if (prefetchAbortController) {
+        prefetchAbortController.abort();
+    }
+    
     // Get current filter values
-    const searchTerm = document.getElementById('search-input').value;
+    const searchTerm = document.getElementById('search-input').value.trim();
+    const searchType = document.getElementById('search-type-filter').value;
+    const statusFilter = document.getElementById('status-filter').value;
+    const nextPage = currentPage + 1;
+    const skip = (nextPage - 1) * itemsPerPage;
+    
+    // Don't prefetch if search is too short
+    if (searchTerm && searchTerm.length < MIN_SEARCH_LENGTH) {
+        return;
+    }
+    
+    // Build the query string for next page
+    const params = new URLSearchParams();
+    params.append('skip', skip);
+    params.append('limit', itemsPerPage);
+    
+    if (searchTerm && searchTerm.length >= MIN_SEARCH_LENGTH) {
+        params.append('search', searchTerm);
+        params.append('search_type', searchType || 'sku');
+    }
+    if (statusFilter) {
+        params.append('active', statusFilter === 'true');
+    }
+    
+    const queryKey = params.toString();
+    
+    // Only prefetch if we don't already have it cached
+    if (prefetchCache && prefetchCache.queryKey === queryKey) {
+        return; // Already cached
+    }
+    
+    // Create new AbortController for prefetch
+    prefetchAbortController = new AbortController();
+    
+    try {
+        const response = await fetch(`/products/?${queryKey}`, {
+            signal: prefetchAbortController.signal
+        });
+        
+        if (!response.ok) {
+            return; // Silently fail prefetch
+        }
+        
+        const data = await response.json();
+        
+        // Cache the prefetched data
+        prefetchCache = {
+            queryKey: queryKey,
+            data: data,
+            page: nextPage
+        };
+        
+        console.log('Next page prefetched');
+    } catch (error) {
+        // Silently ignore prefetch errors (aborted, network issues, etc.)
+        if (error.name !== 'AbortError') {
+            console.log('Prefetch failed (non-critical):', error.message);
+        }
+    } finally {
+        prefetchAbortController = null;
+    }
+}
+
+// Fetch and display products with server-side pagination
+async function fetchProducts(showLoading = true, useCache = true) {
+    // Cancel any pending search request
+    if (currentSearchAbortController) {
+        currentSearchAbortController.abort();
+    }
+    
+    // Create new AbortController for this request
+    currentSearchAbortController = new AbortController();
+    
+    // Get current filter values
+    const searchTerm = document.getElementById('search-input').value.trim();
+    const searchType = document.getElementById('search-type-filter').value;
     const statusFilter = document.getElementById('status-filter').value;
     const skip = (currentPage - 1) * itemsPerPage;
+    
+    // Check cache first if enabled
+    const queryKey = getQueryKey(currentPage);
+    if (useCache && prefetchCache && prefetchCache.queryKey === queryKey) {
+        // Use cached data immediately
+        const data = prefetchCache.data;
+        const products = data.products;
+        const totalItems = data.total;
+        
+        // Clear cache after use
+        prefetchCache = null;
+        
+        // Handle null total
+        if (totalItems === null) {
+            isLoadMoreMode = true;
+            const hasMore = products.length === itemsPerPage;
+            const shouldAppend = currentPage > 1 && isLoadMoreMode;
+            populateProductsTable(products, shouldAppend);
+            renderPagination(null, hasMore);
+        } else {
+            isLoadMoreMode = false;
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+            const hasMore = currentPage < totalPages;
+            populateProductsTable(products, false);
+            renderPagination(totalPages, hasMore);
+        }
+        
+        // Prefetch next page in background
+        prefetchNextPage();
+        return;
+    }
+    
+    // Update current query key
+    currentQueryKey = queryKey;
+
+    // Validate minimum search length
+    if (searchTerm && searchTerm.length < MIN_SEARCH_LENGTH) {
+        // Don't search if less than minimum length, but allow empty search
+        if (showLoading) {
+            showLoadingState();
+        }
+        // Wait a bit to show loading, then show message
+        setTimeout(() => {
+            const tbody = document.querySelector('#products-table tbody');
+            tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; padding: 20px; color: #666;">Please enter at least ${MIN_SEARCH_LENGTH} characters to search</td></tr>`;
+            hideLoadingState();
+        }, 100);
+        return;
+    }
 
     // Build the query string
     const params = new URLSearchParams();
     params.append('skip', skip);
     params.append('limit', itemsPerPage);
     
-    if (searchTerm) {
+    if (searchTerm && searchTerm.length >= MIN_SEARCH_LENGTH) {
         params.append('search', searchTerm);
+        // Always include search_type (defaults to "sku" if not set)
+        params.append('search_type', searchType || 'sku');
     }
     if (statusFilter) {
         // Convert string "true"/"false" to boolean for API
@@ -34,57 +215,156 @@ async function fetchProducts() {
         params.append('active', statusFilter === 'true');
     }
 
+    if (showLoading) {
+        showLoadingState();
+    }
+
     try {
-        const response = await fetch(`/products/?${params.toString()}`);
+        const url = `/products/?${params.toString()}`;
+        console.log('Fetching products from:', url);
+        const response = await fetch(url, {
+            signal: currentSearchAbortController.signal
+        });
+        
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
         
         const data = await response.json();
+        console.log('Received data:', { total: data.total, productsCount: data.products?.length, products: data.products });
         
-        // data is now { total: 12345, products: [...] }
-        const products = data.products;
+        // data is now { total: 12345, products: [...] } or { total: null, products: [...] }
+        const products = data.products || [];
         const totalItems = data.total;
         
-        const totalPages = Math.ceil(totalItems / itemsPerPage);
+        // Handle null total (when count query times out on large datasets)
+        if (totalItems === null) {
+            // Use "Load More" pattern: append products instead of replacing
+            isLoadMoreMode = true;
+            const hasMore = products.length === itemsPerPage;
+            // Append products if we're loading more, replace if it's a new search/filter
+            const shouldAppend = currentPage > 1 && isLoadMoreMode;
+            populateProductsTable(products, shouldAppend);
+            renderPagination(null, hasMore); // Pass null for totalPages, hasMore to indicate if there are more pages
+            
+            // Prefetch next page if there might be more
+            if (hasMore) {
+                prefetchNextPage();
+            }
+        } else {
+            // Standard pagination mode: replace products
+            isLoadMoreMode = false;
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+            const hasMore = currentPage < totalPages;
+            populateProductsTable(products, false); // Always replace in standard pagination
+            renderPagination(totalPages, hasMore);
+            
+            // Prefetch next page if there are more pages
+            if (hasMore) {
+                prefetchNextPage();
+            }
+        }
         
-        populateProductsTable(products);
-        renderPagination(totalPages);
+        hideLoadingState();
         
     } catch (error) {
+        // Don't show error if request was aborted (user typed new search)
+        if (error.name === 'AbortError') {
+            console.log('Search request cancelled');
+            return;
+        }
+        
         console.error('Error fetching products:', error);
-        alert('Failed to fetch products: ' + error.message);
+        hideLoadingState();
+        
+        const tbody = document.querySelector('#products-table tbody');
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; padding: 20px; color: #d00;">Failed to fetch products: ${error.message}</td></tr>`;
+    } finally {
+        currentSearchAbortController = null;
     }
 }
 
 // Apply filters and pagination
 // This function now just tells fetchProducts to get the new filtered data from the server
 function applyFilters() {
-    fetchProducts();
+    // Cancel any pending debounced search when pagination/filter changes
+    if (searchDebounceTimer) {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = null;
+    }
+    
+    // Invalidate prefetch cache when filters change
+    const newQueryKey = getQueryKey(currentPage);
+    if (newQueryKey !== currentQueryKey) {
+        prefetchCache = null;
+        if (prefetchAbortController) {
+            prefetchAbortController.abort();
+        }
+        // Reset Load More mode when filters change
+        isLoadMoreMode = false;
+    }
+    
+    fetchProducts(true); // Show loading state for pagination/filter changes
+}
+
+// Load more products (for Load More button)
+function loadMore() {
+    currentPage++;
+    fetchProducts(false); // Don't show loading state for Load More (smoother UX)
 }
 
 // Populate products table
-function populateProductsTable(products) {
+function populateProductsTable(products, append = false) {
     const tbody = document.querySelector('#products-table tbody');
-    tbody.innerHTML = '';
+    console.log('populateProductsTable called with:', { productsCount: products?.length, append, products });
+    
+    // Clear table if not appending
+    if (!append) {
+        tbody.innerHTML = '';
+    }
 
-    if (products.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No products found</td></tr>';
+    if (!products || products.length === 0) {
+        // Only show "No products found" if we're not appending (first load)
+        if (!append) {
+            console.log('No products found, showing message');
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No products found</td></tr>';
+        }
         return;
     }
 
     products.forEach(product => {
         const row = document.createElement('tr');
+        const description = product.description || '';
+        // Escape HTML to prevent XSS
+        const escapedDescription = description
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+        
         row.innerHTML = `
             <td>${product.sku}</td>
             <td>${product.name}</td>
-            <td>${product.description || ''}</td>
+            <td class="description-cell">${escapedDescription}</td>
             <td>${product.active ? 'Yes' : 'No'}</td>
             <td>
                 <button class="edit-btn" data-id="${product.id}">Edit</button>
                 <button class="delete-btn" data-id="${product.id}">Delete</button>
             </td>
         `;
+        
+        // Add click handler to description cell
+        const descriptionCell = row.querySelector('.description-cell');
+        if (description && description.length > 0) {
+            descriptionCell.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevent row click events
+                const fullDescription = description; // Use original, unescaped description
+                document.getElementById('description-modal-text').textContent = fullDescription;
+                openModal('description-modal');
+            });
+        }
+        
         tbody.appendChild(row);
     });
 
@@ -97,13 +377,42 @@ function populateProductsTable(products) {
     });
 }
 
-// Render pagination with smart page window
-function renderPagination(totalPages) {
+// Render pagination
+// This function now has two modes:
+// 1. "Standard" (if totalPages is known): [Prev] [1] [...] [4] [5] [6] [...] [10] [Next]
+// 2. "Load More" (if totalPages is null): [Load More] button that appends products
+function renderPagination(totalPages, hasMore = true) {
     const paginationDiv = document.getElementById('pagination');
     paginationDiv.innerHTML = '';
+
+    // --- CASE 1: totalPages is NULL (Fast count timed out) ---
+    // Use "Load More" button pattern
+    if (totalPages === null) {
+        // Only show "Load More" button if there are more results
+        if (!hasMore) {
+            return; // No pagination needed - we've reached the end
+        }
+        
+        const loadMoreBtn = document.createElement('button');
+        loadMoreBtn.textContent = 'Load More';
+        loadMoreBtn.classList.add('btn-primary');
+        loadMoreBtn.style.margin = '20px auto';
+        loadMoreBtn.style.display = 'block';
+        loadMoreBtn.addEventListener('click', () => {
+            loadMore();
+        });
+        paginationDiv.appendChild(loadMoreBtn);
+        
+        return; // We're done
+    }
+
+    // --- CASE 2: totalPages is KNOWN ---
+    // We can render the "standard" numbered pagination.
     
-    if (totalPages <= 1) return;
-    
+    if (totalPages <= 1) {
+        return; // No pagination needed
+    }
+
     // Previous button
     const prevBtn = document.createElement('button');
     prevBtn.textContent = '<< Previous';
@@ -116,53 +425,39 @@ function renderPagination(totalPages) {
         }
     });
     paginationDiv.appendChild(prevBtn);
-    
-    // Smart pagination: show first, last, current page ± 2, and ellipsis
-    const maxVisiblePages = 7; // Show max 7 page numbers
+
+    // --- Page Number Logic ---
+    const windowSize = 2; // Pages to show on each side of the current page
     const pagesToShow = [];
-    
-    if (totalPages <= maxVisiblePages) {
-        // Show all pages if total is small
-        for (let i = 1; i <= totalPages; i++) {
-            pagesToShow.push(i);
-        }
-    } else {
-        // Always show first page
-        pagesToShow.push(1);
-        
-        // Calculate window around current page
-        const windowSize = 2; // Show 2 pages on each side of current
-        let start = Math.max(2, currentPage - windowSize);
-        let end = Math.min(totalPages - 1, currentPage + windowSize);
-        
-        // Adjust window if we're near the start or end
-        if (currentPage <= windowSize + 2) {
-            end = Math.min(totalPages - 1, maxVisiblePages - 1);
-        } else if (currentPage >= totalPages - windowSize - 1) {
-            start = Math.max(2, totalPages - (maxVisiblePages - 2));
-        }
-        
-        // Add ellipsis after first page if needed
-        if (start > 2) {
-            pagesToShow.push('...');
-        }
-        
-        // Add pages in window
-        for (let i = start; i <= end; i++) {
-            pagesToShow.push(i);
-        }
-        
-        // Add ellipsis before last page if needed
-        if (end < totalPages - 1) {
-            pagesToShow.push('...');
-        }
-        
-        // Always show last page
+
+    // Add page 1
+    pagesToShow.push(1);
+
+    // Add ellipsis after 1 if needed
+    if (currentPage - windowSize > 2) {
+        pagesToShow.push('...');
+    }
+
+    // Add pages in the "window"
+    for (let i = Math.max(2, currentPage - windowSize); i <= Math.min(totalPages - 1, currentPage + windowSize); i++) {
+        pagesToShow.push(i);
+    }
+
+    // Add ellipsis before last page if needed
+    if (currentPage + windowSize < totalPages - 1) {
+        pagesToShow.push('...');
+    }
+
+    // Add last page (if it's not page 1)
+    if (totalPages > 1) {
         pagesToShow.push(totalPages);
     }
     
-    // Render page buttons
-    pagesToShow.forEach((page) => {
+    // De-duplicate array (in case '1' or 'totalPages' was in the window)
+    const uniquePagesToShow = [...new Set(pagesToShow)];
+
+    // Render the page buttons
+    uniquePagesToShow.forEach((page) => {
         if (page === '...') {
             const ellipsis = document.createElement('span');
             ellipsis.textContent = '...';
@@ -180,11 +475,11 @@ function renderPagination(totalPages) {
             paginationDiv.appendChild(pageBtn);
         }
     });
-    
+
     // Next button
     const nextBtn = document.createElement('button');
     nextBtn.textContent = 'Next >>';
-    nextBtn.disabled = currentPage === totalPages;
+    nextBtn.disabled = currentPage === totalPages; // We know the total
     nextBtn.classList.toggle('disabled', currentPage === totalPages);
     nextBtn.addEventListener('click', () => {
         if (currentPage < totalPages) {
@@ -238,6 +533,8 @@ async function handleDelete(event) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
 
+        // Invalidate cache after delete
+        prefetchCache = null;
         await fetchProducts();
     } catch (error) {
         console.error('Error deleting product:', error);
@@ -283,6 +580,8 @@ document.getElementById('product-form').addEventListener('submit', async (e) => 
 
         closeModal('product-modal');
         resetProductForm();
+        // Invalidate cache after create/update
+        prefetchCache = null;
         await fetchProducts();
     } catch (error) {
         console.error('Error saving product:', error);
@@ -315,28 +614,131 @@ document.getElementById('product-cancel-btn').addEventListener('click', () => {
     resetProductForm();
 });
 
-// Search and filter
+// Debounced search function
+function debouncedSearch() {
+    // Clear existing timer
+    if (searchDebounceTimer) {
+        clearTimeout(searchDebounceTimer);
+    }
+    
+    // Reset to page 1 for new search
+    currentPage = 1;
+    
+    // Invalidate prefetch cache when search changes
+    prefetchCache = null;
+    if (prefetchAbortController) {
+        prefetchAbortController.abort();
+    }
+    
+    // Reset Load More mode when search changes
+    isLoadMoreMode = false;
+    
+    // Set new timer - wait for user to stop typing
+    searchDebounceTimer = setTimeout(() => {
+        fetchProducts(true); // Show loading state
+        searchDebounceTimer = null;
+    }, SEARCH_DEBOUNCE_MS);
+}
+
+// Search and filter with debouncing
 document.getElementById('search-input').addEventListener('input', () => {
-    currentPage = 1; // Reset to page 1 for new search
-    applyFilters();
+    debouncedSearch();
 });
 
+// Search type filter changes immediately (no debounce needed)
+document.getElementById('search-type-filter').addEventListener('change', () => {
+    currentPage = 1; // Reset to page 1 for new filter
+    // Cancel any pending search
+    if (searchDebounceTimer) {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = null;
+    }
+    // Invalidate prefetch cache when filter changes
+    prefetchCache = null;
+    if (prefetchAbortController) {
+        prefetchAbortController.abort();
+    }
+    // Reset Load More mode when filter changes
+    isLoadMoreMode = false;
+    fetchProducts(true); // Show loading state
+});
+
+// Status filter changes immediately (no debounce needed)
 document.getElementById('status-filter').addEventListener('change', () => {
     currentPage = 1; // Reset to page 1 for new filter
-    applyFilters();
+    // Cancel any pending search
+    if (searchDebounceTimer) {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = null;
+    }
+    // Invalidate prefetch cache when filter changes
+    prefetchCache = null;
+    if (prefetchAbortController) {
+        prefetchAbortController.abort();
+    }
+    // Reset Load More mode when filter changes
+    isLoadMoreMode = false;
+    fetchProducts(true); // Show loading state
 });
 
-// File Upload - Show selected filename
-document.getElementById('file-input').addEventListener('change', (e) => {
-    const fileInput = e.target;
-    const fileNameDisplay = document.getElementById('file-name-display');
-    
-    if (fileInput.files && fileInput.files.length > 0) {
-        fileNameDisplay.textContent = `Selected: ${fileInput.files[0].name}`;
-        fileNameDisplay.style.display = 'inline-block';
+// File Upload - Enhanced with drag-and-drop
+const fileInput = document.getElementById('file-input');
+const fileDropZone = document.getElementById('file-drop-zone');
+const fileNameDisplay = document.getElementById('file-name-display');
+const uploadBtn = document.getElementById('upload-btn');
+
+// Function to handle file selection
+function handleFileSelection(file) {
+    if (file) {
+        fileNameDisplay.textContent = file.name;
+        fileNameDisplay.classList.add('show');
+        fileDropZone.classList.add('has-file');
+        uploadBtn.disabled = false;
     } else {
         fileNameDisplay.textContent = '';
-        fileNameDisplay.style.display = 'none';
+        fileNameDisplay.classList.remove('show');
+        fileDropZone.classList.remove('has-file');
+        uploadBtn.disabled = true;
+    }
+}
+
+// File input change event
+fileInput.addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files.length > 0 ? e.target.files[0] : null;
+    handleFileSelection(file);
+});
+
+// Drag and drop functionality
+fileDropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    fileDropZone.classList.add('drag-over');
+});
+
+fileDropZone.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    fileDropZone.classList.remove('drag-over');
+});
+
+fileDropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    fileDropZone.classList.remove('drag-over');
+    
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+        const file = files[0];
+        // Check if it's a CSV file
+        if (file.name.toLowerCase().endsWith('.csv')) {
+            // Create a new FileList and set it to the input
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(file);
+            fileInput.files = dataTransfer.files;
+            handleFileSelection(file);
+        } else {
+            alert('Please select a CSV file');
+        }
     }
 });
 
@@ -345,20 +747,36 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     
     const fileInput = document.getElementById('file-input');
-    const file = fileInput.files[0];
+    let file = fileInput.files[0];
+    
+    // If no file in input but we have a stored file (from failed upload), use that
+    if (!file && window.lastUploadFile) {
+        file = window.lastUploadFile;
+        // Restore file to input
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(file);
+        fileInput.files = dataTransfer.files;
+        handleFileSelection(file);
+    }
     
     if (!file) {
         alert('Please select a file to upload');
         return;
     }
     
+    // Reset button text if it was set to "Retry Upload"
+    uploadBtn.textContent = 'Upload CSV';
+    
     const progressContainer = document.getElementById('progress-container');
     const progressFill = document.querySelector('#upload-progress .progress-fill');
     const statusDiv = document.getElementById('upload-status');
+    const percentageDiv = document.getElementById('upload-percentage');
     
     progressContainer.style.display = 'block';
     progressFill.style.width = '0%';
     statusDiv.textContent = 'Preparing upload...';
+    percentageDiv.textContent = '0%';
+    uploadBtn.disabled = true;
     
     try {
         const formData = new FormData();
@@ -381,7 +799,17 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         
         // Track last refresh time to avoid too frequent updates
         let lastProductRefresh = 0;
-        const PRODUCT_REFRESH_INTERVAL = 3000; // Refresh product list every 3 seconds during upload
+        const PRODUCT_REFRESH_INTERVAL = 2000; // Refresh product list every 2 seconds during upload (reduced for more real-time updates)
+        
+        // Start periodic refresh immediately when upload starts (even if status is queued)
+        const refreshInterval = setInterval(() => {
+            const now = Date.now();
+            if (now - lastProductRefresh >= PRODUCT_REFRESH_INTERVAL) {
+                prefetchCache = null; // Invalidate cache during upload
+                fetchProducts(false, false); // Don't show loading, don't use cache
+                lastProductRefresh = now;
+            }
+        }, PRODUCT_REFRESH_INTERVAL);
         
         eventSource.onmessage = (event) => {
             try {
@@ -393,60 +821,53 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
                 // Update progress bar with smooth animation (CSS transition handles this)
                 progressFill.style.width = `${progress}%`;
                 
-                // Update status message with progress percentage for better feedback
+                // Update status message and percentage separately
                 if (message) {
-                    statusDiv.textContent = `${message} (${progress}%)`;
+                    statusDiv.textContent = message;
                 } else {
-                    statusDiv.textContent = `Status: ${status} (${progress}%)`;
+                    statusDiv.textContent = `Status: ${status}`;
                 }
+                percentageDiv.textContent = `${progress}%`;
                 
-                // Refresh product list periodically during upload to show newly added products
-                if (status === 'processing') {
+                // Refresh product list immediately when status changes to processing or when progress updates
+                if (status === 'processing' || status === 'queued') {
                     const now = Date.now();
-                    if (now - lastProductRefresh >= PRODUCT_REFRESH_INTERVAL) {
-                        fetchProducts();
-                        lastProductRefresh = now;
+                    // Refresh more frequently when processing (every progress update or every 2 seconds)
+                    if (status === 'processing' && progress > 0) {
+                        // Refresh immediately on progress updates during processing
+                        if (now - lastProductRefresh >= 1000) { // At least 1 second between refreshes
+                            prefetchCache = null;
+                            fetchProducts(false, false);
+                            lastProductRefresh = now;
+                        }
                     }
                 }
                 
                 if (status === 'complete' || status === 'failed') {
+                    // Stop the periodic refresh interval
+                    clearInterval(refreshInterval);
                     eventSource.close();
                     
                     if (status === 'complete') {
                         statusDiv.textContent = 'Upload completed successfully!';
+                        percentageDiv.textContent = '100%';
                         // Final refresh to show all products
+                        prefetchCache = null; // Invalidate cache after upload
                         fetchProducts();
-                        // Clear file input
+                        // Clear file input and reset UI
                         fileInput.value = '';
-                        document.getElementById('file-name-display').style.display = 'none';
+                        handleFileSelection(null);
+                        // Hide progress after a delay
+                        setTimeout(() => {
+                            progressContainer.style.display = 'none';
+                        }, 3000);
                     } else {
-                        statusDiv.innerHTML = `Upload failed: ${message || 'Unknown error'}<br><button id="retry-upload-btn" class="btn-primary" style="margin-top: 10px;">Retry Upload</button>`;
+                        statusDiv.textContent = `Upload failed: ${message || 'Unknown error'}`;
+                        percentageDiv.textContent = '';
                         // Store file for retry
                         window.lastUploadFile = file;
-                        
-                        // Add retry button listener (remove old one first if exists)
-                        const oldRetryBtn = document.getElementById('retry-upload-btn');
-                        if (oldRetryBtn) {
-                            oldRetryBtn.replaceWith(oldRetryBtn.cloneNode(true));
-                        }
-                        const retryBtn = document.getElementById('retry-upload-btn');
-                        if (retryBtn) {
-                            retryBtn.addEventListener('click', async () => {
-                                if (window.lastUploadFile) {
-                                    // Create a new FileList-like object and set it to the input
-                                    const dataTransfer = new DataTransfer();
-                                    dataTransfer.items.add(window.lastUploadFile);
-                                    fileInput.files = dataTransfer.files;
-                                    
-                                    // Trigger upload again
-                                    const uploadForm = document.getElementById('upload-form');
-                                    const fakeEvent = new Event('submit', { bubbles: true, cancelable: true });
-                                    uploadForm.dispatchEvent(fakeEvent);
-                                } else {
-                                    alert('No file available to retry. Please select a new file.');
-                                }
-                            });
-                        }
+                        uploadBtn.disabled = false;
+                        uploadBtn.textContent = 'Retry Upload';
                     }
                 }
             } catch (error) {
@@ -457,6 +878,7 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         
         eventSource.onerror = (error) => {
             console.error('EventSource error:', error);
+            clearInterval(refreshInterval); // Stop periodic refresh
             eventSource.close();
             statusDiv.textContent = 'Connection to progress stream lost';
         };
@@ -465,6 +887,12 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         console.error('Error uploading file:', error);
         alert('Failed to upload file: ' + error.message);
         statusDiv.textContent = 'Upload failed: ' + error.message;
+        const percentageDiv = document.getElementById('upload-percentage');
+        if (percentageDiv) {
+            percentageDiv.textContent = '';
+        }
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = 'Upload CSV';
     }
 });
 
@@ -490,6 +918,8 @@ document.getElementById('delete-all-btn').addEventListener('click', async () => 
 
             const result = await response.json();
             alert(result.message || 'All products deleted successfully');
+            // Invalidate cache after bulk delete
+            prefetchCache = null;
             await fetchProducts();
         } catch (error) {
             console.error('Error deleting all products:', error);
@@ -693,10 +1123,20 @@ document.getElementById('webhook-cancel-btn').addEventListener('click', () => {
     resetWebhookForm();
 });
 
+// Description modal close buttons
+document.getElementById('description-modal-close').addEventListener('click', () => {
+    closeModal('description-modal');
+});
+
+document.getElementById('description-modal-close-btn').addEventListener('click', () => {
+    closeModal('description-modal');
+});
+
 // Close modals when clicking outside
 window.addEventListener('click', (e) => {
     const productModal = document.getElementById('product-modal');
     const webhookModal = document.getElementById('webhook-modal');
+    const descriptionModal = document.getElementById('description-modal');
     
     if (e.target === productModal) {
         closeModal('product-modal');
@@ -706,10 +1146,13 @@ window.addEventListener('click', (e) => {
         closeModal('webhook-modal');
         resetWebhookForm();
     }
+    if (e.target === descriptionModal) {
+        closeModal('description-modal');
+    }
 });
 
 // Load on page load
 document.addEventListener('DOMContentLoaded', () => {
-    fetchProducts();
+    fetchProducts(true); // Show loading on initial page load
     fetchWebhooks();
 });

@@ -31,6 +31,6 @@ class Product(ProductBase):
 
 class ProductListResponse(BaseModel):
     """Response model for paginated product list."""
-    total: int
+    total: int | None  # None when count query times out (for large result sets)
     products: list[Product]
 
