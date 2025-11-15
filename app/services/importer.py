@@ -1,7 +1,9 @@
+import base64
 import csv
 import json
 import logging
 import ssl
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -369,16 +371,20 @@ def process_csv_chunk(self, chunk_data: List[Dict[str, Any]], job_id: str, chunk
     retry_backoff_max=60,
     retry_jitter=True,
 )
-def process_csv_import(self, file_path: str, job_id: str):
+def process_csv_import(self, file_content_b64: str, job_id: str):
     """
     Process CSV import by splitting into chunks and processing them in parallel.
     This orchestrates the parallel processing of chunks across multiple workers.
+    
+    Args:
+        file_content_b64: Base64-encoded CSV file content
+        job_id: Unique job identifier
     """
-    logger.info(f"Starting parallel CSV import: job_id={job_id}, file_path={file_path}")
+    logger.info(f"Starting parallel CSV import: job_id={job_id}")
 
     redis_client = None
     db = None
-    file_path_obj = Path(file_path)
+    file_path_obj = None
     redis_key = f"job:{job_id}"
 
     try:
@@ -411,9 +417,34 @@ def process_csv_import(self, file_path: str, job_id: str):
             pass
         raise
     
-    if not file_path_obj.exists():
-        redis_client.set(redis_key, json.dumps({"status": "failed", "message": f"File not found: {file_path}", "progress": 0}))
-        # Don't close - uses shared connection pool
+    # Decode base64 content and write to temporary file on worker's filesystem
+    try:
+        file_content = base64.b64decode(file_content_b64)
+        # Create a temporary file on the worker's filesystem
+        with tempfile.NamedTemporaryFile(mode='wb', suffix='.csv', delete=False) as temp_file:
+            temp_file.write(file_content)
+            file_path_obj = Path(temp_file.name)
+        logger.info(f"Decoded file content and saved to temporary file: {file_path_obj}")
+    except Exception as e:
+        error_msg = f"Failed to decode file content: {str(e)}"
+        logger.error(error_msg)
+        if redis_client:
+            redis_client.set(redis_key, json.dumps({
+                "status": "failed",
+                "message": error_msg,
+                "progress": 0
+            }))
+        return
+    
+    if not file_path_obj or not file_path_obj.exists():
+        error_msg = f"File not found after decoding: {file_path_obj}"
+        logger.error(error_msg)
+        if redis_client:
+            redis_client.set(redis_key, json.dumps({
+                "status": "failed",
+                "message": error_msg,
+                "progress": 0
+            }))
         return
 
     try:
@@ -636,9 +667,10 @@ def process_csv_import(self, file_path: str, job_id: str):
         
     finally:
         # Clean up temp file
-        if file_path_obj.exists():
+        if file_path_obj and file_path_obj.exists():
             try:
                 file_path_obj.unlink()
+                logger.info(f"Cleaned up temporary file: {file_path_obj}")
             except Exception as e:
                 logger.error(f"Failed to delete temp file: {e}")
         

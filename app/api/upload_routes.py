@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import ssl
 import uuid
@@ -23,20 +24,14 @@ async def upload_csv(file: UploadFile = File(...)):
     # Generate unique job_id
     job_id = uuid.uuid4()
     
-    # Create temporary file path
-    temp_dir = Path("/tmp")
-    temp_file_path = temp_dir / f"{job_id}.csv"
-    
-    # Ensure temp directory exists
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Save uploaded file to temporary location
+    # Read file content and encode as base64 for passing to Celery task
+    # This is necessary because the worker runs in a separate container
+    # and cannot access files saved to /tmp on the web service
     try:
-        with open(temp_file_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
+        file_content = await file.read()
+        file_content_b64 = base64.b64encode(file_content).decode('utf-8')
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
     
     # Initialize job status in Redis
     try:
@@ -54,19 +49,16 @@ async def upload_csv(file: UploadFile = File(...)):
     except Exception:
         pass
     
-    # Import and call the Celery task
+    # Import and call the Celery task with file content instead of file path
     try:
         from app.services.importer import process_csv_import
-        process_csv_import.delay(str(temp_file_path), str(job_id))
+        process_csv_import.delay(file_content_b64, str(job_id))
     except ImportError:
         raise HTTPException(
             status_code=500,
             detail="Import task not available. Please ensure the task is defined."
         )
     except Exception as e:
-        # Clean up file if task submission fails
-        if temp_file_path.exists():
-            temp_file_path.unlink()
         raise HTTPException(status_code=500, detail=f"Failed to queue task: {str(e)}")
     
     return {"job_id": str(job_id), "message": "File uploaded and processing started"}
