@@ -86,11 +86,12 @@ async def init_csv_upload():
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to initialize upload: {str(e)}")
     else:
-        # Fallback: return job_id for server-side upload (will hit size limits on Vercel)
-        return {
-            "job_id": str(job_id),
-            "cloudinary": None
-        }
+        # Cloudinary not configured - return error instead of fallback
+        # Fallback to server upload will hit Vercel's 4.5MB limit
+        raise HTTPException(
+            status_code=500,
+            detail="Cloudinary is not configured. Large file uploads require Cloudinary credentials. Please set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET environment variables."
+        )
 
 
 @router.post("/csv/complete")

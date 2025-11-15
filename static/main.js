@@ -796,7 +796,12 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         
         let fileUrl = null;
         
-        // Step 2: Upload to Cloudinary if configured, otherwise fallback to server upload
+        // Step 2: Upload to Cloudinary if configured
+        // IMPORTANT: Without Cloudinary, large files will fail on Vercel due to 4.5MB limit
+        if (!cloudinaryConfig) {
+            throw new Error('Cloudinary is not configured. Large file uploads require Cloudinary to bypass Vercel size limits. Please configure CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET environment variables.');
+        }
+        
         if (cloudinaryConfig) {
             // Upload directly to Cloudinary (bypasses Vercel size limits)
             statusDiv.textContent = 'Uploading to cloud...';
@@ -839,24 +844,6 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
                 const errorData = await completeResult.json().catch(() => ({ detail: `HTTP error! status: ${completeResult.status}` }));
                 throw new Error(errorData.detail || `HTTP error! status: ${completeResult.status}`);
             }
-        } else {
-            // Fallback: Upload through server (will hit size limits on Vercel)
-            statusDiv.textContent = 'Uploading file...';
-            const formData = new FormData();
-            formData.append('file', file);
-            
-            const result = await fetch('/upload/csv', {
-                method: 'POST',
-                body: formData
-            });
-            
-            if (!result.ok) {
-                const errorData = await result.json().catch(() => ({ detail: `HTTP error! status: ${result.status}` }));
-                throw new Error(errorData.detail || `HTTP error! status: ${result.status}`);
-            }
-            
-            const resultData = await result.json();
-            // jobId already set from init
         }
         
         const eventSource = new EventSource(`/upload/progress/${jobId}`);
