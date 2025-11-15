@@ -11,6 +11,7 @@ import cloudinary.uploader
 import redis.asyncio as aioredis
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app.core.config import settings
 
@@ -23,6 +24,12 @@ if settings.CLOUDINARY_CLOUD_NAME and settings.CLOUDINARY_API_KEY and settings.C
     )
 
 router = APIRouter(prefix="/upload", tags=["upload"])
+
+
+class CompleteUploadRequest(BaseModel):
+    """Request model for completing CSV upload."""
+    job_id: str
+    file_url: str
 
 
 @router.post("/csv/init")
@@ -95,11 +102,13 @@ async def init_csv_upload():
 
 
 @router.post("/csv/complete")
-async def complete_csv_upload(job_id: str, file_url: str):
+async def complete_csv_upload(request: CompleteUploadRequest):
     """
     Complete the CSV upload process after file has been uploaded to Cloudinary.
     This endpoint is called after the client successfully uploads to Cloudinary.
     """
+    job_id = request.job_id
+    file_url = request.file_url
     # Validate job exists
     try:
         import redis
@@ -149,10 +158,20 @@ async def complete_csv_upload(job_id: str, file_url: str):
 
 @router.post("/csv")
 async def upload_csv(file: UploadFile = File(...)):
-    """Upload a CSV file for processing."""
+    """
+    Upload a CSV file for processing.
+    
+    WARNING: This endpoint is deprecated for large files due to Vercel's 4.5MB limit.
+    Use /upload/csv/init instead for files larger than 4MB.
+    """
     # Validate file extension
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="File must be a CSV file")
+    
+    # Check file size early to provide better error message
+    # Note: Vercel has a hard 4.5MB limit that cannot be changed
+    # We can't read the full file to check size without hitting the limit,
+    # but we can provide a better error message if it fails
     
     # Generate unique job_id
     job_id = uuid.uuid4()
@@ -181,6 +200,7 @@ async def upload_csv(file: UploadFile = File(...)):
         # Upload to Cloudinary for large files
         try:
             # Read file content
+            # Note: This will fail with 413 if file is > 4.5MB on Vercel
             file_content = await file.read()
             
             # Upload to Cloudinary with a unique public_id
@@ -212,17 +232,36 @@ async def upload_csv(file: UploadFile = File(...)):
             except Exception:
                 pass
                 
+        except HTTPException:
+            # Re-raise HTTP exceptions (like 413) as-is
+            raise
         except Exception as e:
-            # Fall back to base64 if Cloudinary upload fails
+            # For other errors, check if it's a size-related error
+            error_str = str(e).lower()
+            if '413' in error_str or 'payload too large' in error_str or 'request entity too large' in error_str:
+                raise HTTPException(
+                    status_code=413,
+                    detail="File is too large for direct upload. Please use the /upload/csv/init endpoint which uploads directly to Cloudinary, bypassing Vercel's 4.5MB limit."
+                )
+            # Fall back to base64 if Cloudinary upload fails for other reasons
             await file.seek(0)
             file_content = await file.read()
             file_content_b64 = base64.b64encode(file_content).decode('utf-8')
     else:
         # Fallback to base64 encoding if Cloudinary is not configured
+        # This will fail for files > 4.5MB on Vercel
         try:
             file_content = await file.read()
             file_content_b64 = base64.b64encode(file_content).decode('utf-8')
+        except HTTPException:
+            raise
         except Exception as e:
+            error_str = str(e).lower()
+            if '413' in error_str or 'payload too large' in error_str or 'request entity too large' in error_str:
+                raise HTTPException(
+                    status_code=413,
+                    detail="File is too large (Vercel limit: 4.5MB). Cloudinary is not configured. Please set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET environment variables to enable large file uploads."
+                )
             raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
     
     # Import and call the Celery task

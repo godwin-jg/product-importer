@@ -66,8 +66,20 @@ def main():
     def signal_handler(sig, frame):
         print("\nShutting down...", flush=True)
         if celery_process_container['process']:
-            celery_process_container['process'].terminate()
-            celery_process_container['process'].wait()
+            celery_process = celery_process_container['process']
+            print("Terminating Celery worker...", flush=True)
+            # Send SIGTERM for graceful shutdown
+            celery_process.terminate()
+            try:
+                # Wait up to 10 seconds for graceful shutdown
+                celery_process.wait(timeout=10)
+                print("Celery worker terminated gracefully", flush=True)
+            except subprocess.TimeoutExpired:
+                # Force kill if it doesn't respond
+                print("Celery worker didn't respond, forcing termination...", flush=True)
+                celery_process.kill()
+                celery_process.wait()
+                print("Celery worker force terminated", flush=True)
         sys.exit(0)
     
     signal.signal(signal.SIGTERM, signal_handler)

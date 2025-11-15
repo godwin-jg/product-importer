@@ -764,6 +764,14 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         return;
     }
     
+    // Check file size and warn if it's very large (though Cloudinary should handle it)
+    const fileSizeMB = file.size / (1024 * 1024);
+    if (fileSizeMB > 100) {
+        if (!confirm(`Warning: The file is ${fileSizeMB.toFixed(2)}MB. Large files may take a while to upload. Continue?`)) {
+            return;
+        }
+    }
+    
     // Reset button text if it was set to "Retry Upload"
     uploadBtn.textContent = 'Upload CSV';
     
@@ -786,6 +794,10 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         });
         
         if (!initResult.ok) {
+            // Handle 413 errors specifically
+            if (initResult.status === 413) {
+                throw new Error('File is too large. The upload initialization request itself exceeded Vercel\'s 4.5MB limit. This should not happen with the new upload flow. Please contact support.');
+            }
             const errorData = await initResult.json().catch(() => ({ detail: `HTTP error! status: ${initResult.status}` }));
             throw new Error(errorData.detail || `HTTP error! status: ${initResult.status}`);
         }
@@ -841,6 +853,10 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
             });
             
             if (!completeResult.ok) {
+                // Handle 413 errors specifically
+                if (completeResult.status === 413) {
+                    throw new Error('The completion request exceeded Vercel\'s 4.5MB limit. This is unexpected - the file should have been uploaded directly to Cloudinary. Please check that Cloudinary upload succeeded and try again.');
+                }
                 const errorData = await completeResult.json().catch(() => ({ detail: `HTTP error! status: ${completeResult.status}` }));
                 throw new Error(errorData.detail || `HTTP error! status: ${completeResult.status}`);
             }
@@ -936,8 +952,19 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         
     } catch (error) {
         console.error('Error uploading file:', error);
-        alert('Failed to upload file: ' + error.message);
-        statusDiv.textContent = 'Upload failed: ' + error.message;
+        
+        // Provide more helpful error messages for 413 errors
+        let errorMessage = error.message;
+        if (error.message.includes('413') || error.message.includes('Payload Too Large') || error.message.includes('Request Entity Too Large')) {
+            errorMessage = 'File is too large for upload. The system is configured to upload directly to Cloudinary to bypass Vercel\'s 4.5MB limit, but the request still failed. Please check:\n\n' +
+                '1. Cloudinary credentials are properly configured\n' +
+                '2. The file is not corrupted\n' +
+                '3. Your network connection is stable\n\n' +
+                'If the problem persists, try uploading a smaller file or contact support.';
+        }
+        
+        alert('Failed to upload file: ' + errorMessage);
+        statusDiv.textContent = 'Upload failed: ' + errorMessage;
         const percentageDiv = document.getElementById('upload-percentage');
         if (percentageDiv) {
             percentageDiv.textContent = '';
