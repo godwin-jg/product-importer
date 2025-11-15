@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
+import httpx
 import redis
 from celery import group
 from redis.exceptions import ResponseError, ConnectionError as RedisConnectionError, TimeoutError as RedisTimeoutError
@@ -371,16 +372,17 @@ def process_csv_chunk(self, chunk_data: List[Dict[str, Any]], job_id: str, chunk
     retry_backoff_max=60,
     retry_jitter=True,
 )
-def process_csv_import(self, file_content_b64: str, job_id: str):
+def process_csv_import(self, file_source: str, job_id: str, use_cloudinary: bool = False):
     """
     Process CSV import by splitting into chunks and processing them in parallel.
     This orchestrates the parallel processing of chunks across multiple workers.
     
     Args:
-        file_content_b64: Base64-encoded CSV file content
+        file_source: Either a Cloudinary URL (if use_cloudinary=True) or base64-encoded content
         job_id: Unique job identifier
+        use_cloudinary: If True, file_source is a Cloudinary URL; if False, it's base64 content
     """
-    logger.info(f"Starting parallel CSV import: job_id={job_id}")
+    logger.info(f"Starting parallel CSV import: job_id={job_id}, use_cloudinary={use_cloudinary}")
 
     redis_client = None
     db = None
@@ -394,7 +396,7 @@ def process_csv_import(self, file_content_b64: str, job_id: str):
         _redis_operation_with_retry(
             lambda: redis_client.set(redis_key, json.dumps({
                 "status": "processing",
-                "message": "Task started, initializing...",
+                "message": "Task started, downloading file..." if use_cloudinary else "Task started, initializing...",
                 "progress": 0
             }))
         )
@@ -417,17 +419,28 @@ def process_csv_import(self, file_content_b64: str, job_id: str):
             pass
         raise
     
-    # Decode base64 content and write to temporary file on worker's filesystem
+    # Download from Cloudinary or decode base64 content and write to temporary file
     try:
-        file_content = base64.b64decode(file_content_b64)
+        if use_cloudinary:
+            # Download file from Cloudinary
+            logger.info(f"Downloading file from Cloudinary: {file_source}")
+            with httpx.Client(timeout=300.0) as client:  # 5 minute timeout for large files
+                response = client.get(file_source)
+                response.raise_for_status()
+                file_content = response.content
+        else:
+            # Decode base64 content
+            logger.info("Decoding base64 file content")
+            file_content = base64.b64decode(file_source)
+        
         # Create a temporary file on the worker's filesystem
         with tempfile.NamedTemporaryFile(mode='wb', suffix='.csv', delete=False) as temp_file:
             temp_file.write(file_content)
             file_path_obj = Path(temp_file.name)
-        logger.info(f"Decoded file content and saved to temporary file: {file_path_obj}")
+        logger.info(f"File saved to temporary file: {file_path_obj}")
     except Exception as e:
-        error_msg = f"Failed to decode file content: {str(e)}"
-        logger.error(error_msg)
+        error_msg = f"Failed to download/decode file: {str(e)}"
+        logger.error(error_msg, exc_info=True)
         if redis_client:
             redis_client.set(redis_key, json.dumps({
                 "status": "failed",
@@ -437,7 +450,7 @@ def process_csv_import(self, file_content_b64: str, job_id: str):
         return
     
     if not file_path_obj or not file_path_obj.exists():
-        error_msg = f"File not found after decoding: {file_path_obj}"
+        error_msg = f"File not found after download/decode: {file_path_obj}"
         logger.error(error_msg)
         if redis_client:
             redis_client.set(redis_key, json.dumps({

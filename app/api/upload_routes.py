@@ -1,15 +1,26 @@
 import asyncio
 import base64
+import io
 import json
 import ssl
 import uuid
 from pathlib import Path
 
+import cloudinary
+import cloudinary.uploader
 import redis.asyncio as aioredis
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.core.config import settings
+
+# Configure Cloudinary if credentials are provided
+if settings.CLOUDINARY_CLOUD_NAME and settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET:
+    cloudinary.config(
+        cloud_name=settings.CLOUDINARY_CLOUD_NAME,
+        api_key=settings.CLOUDINARY_API_KEY,
+        api_secret=settings.CLOUDINARY_API_SECRET
+    )
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
@@ -24,15 +35,6 @@ async def upload_csv(file: UploadFile = File(...)):
     # Generate unique job_id
     job_id = uuid.uuid4()
     
-    # Read file content and encode as base64 for passing to Celery task
-    # This is necessary because the worker runs in a separate container
-    # and cannot access files saved to /tmp on the web service
-    try:
-        file_content = await file.read()
-        file_content_b64 = base64.b64encode(file_content).decode('utf-8')
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
-    
     # Initialize job status in Redis
     try:
         import redis
@@ -42,17 +44,74 @@ async def upload_csv(file: UploadFile = File(...)):
         )
         client.set(f"job:{job_id}", json.dumps({
             "status": "queued",
-            "message": "File uploaded, queuing for processing...",
+            "message": "Uploading file...",
             "progress": 0
         }))
         client.close()
     except Exception:
         pass
     
-    # Import and call the Celery task with file content instead of file path
+    # Upload to Cloudinary if configured, otherwise use base64 fallback
+    file_url = None
+    file_content_b64 = None
+    
+    if settings.CLOUDINARY_CLOUD_NAME and settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET:
+        # Upload to Cloudinary for large files
+        try:
+            # Read file content
+            file_content = await file.read()
+            
+            # Upload to Cloudinary with a unique public_id
+            # Use BytesIO to create a file-like object for Cloudinary
+            file_like = io.BytesIO(file_content)
+            upload_result = cloudinary.uploader.upload(
+                file_like,
+                resource_type="raw",
+                public_id=f"csv_imports/{job_id}",
+                folder="csv_imports",
+                overwrite=True,
+                use_filename=False
+            )
+            file_url = upload_result.get("secure_url") or upload_result.get("url")
+            
+            # Update status
+            try:
+                import redis
+                client = redis.from_url(
+                    settings.REDIS_URL,
+                    ssl_cert_reqs=ssl.CERT_NONE if "rediss" in settings.REDIS_URL else None
+                )
+                client.set(f"job:{job_id}", json.dumps({
+                    "status": "queued",
+                    "message": "File uploaded to cloud, queuing for processing...",
+                    "progress": 0
+                }))
+                client.close()
+            except Exception:
+                pass
+                
+        except Exception as e:
+            # Fall back to base64 if Cloudinary upload fails
+            await file.seek(0)
+            file_content = await file.read()
+            file_content_b64 = base64.b64encode(file_content).decode('utf-8')
+    else:
+        # Fallback to base64 encoding if Cloudinary is not configured
+        try:
+            file_content = await file.read()
+            file_content_b64 = base64.b64encode(file_content).decode('utf-8')
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
+    
+    # Import and call the Celery task
     try:
         from app.services.importer import process_csv_import
-        process_csv_import.delay(file_content_b64, str(job_id))
+        if file_url:
+            # Pass Cloudinary URL to task
+            process_csv_import.delay(file_url, str(job_id), use_cloudinary=True)
+        else:
+            # Pass base64 content (fallback)
+            process_csv_import.delay(file_content_b64, str(job_id), use_cloudinary=False)
     except ImportError:
         raise HTTPException(
             status_code=500,
