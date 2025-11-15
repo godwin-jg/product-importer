@@ -18,13 +18,13 @@ services:
           property: connectionString
     healthCheckPath: /
 
-  # Worker service for Celery tasks
-  - type: worker
+  # Worker service for Celery tasks (deployed as web service to avoid paid background worker)
+  - type: web
     name: product-importer-worker
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: celery -A app.worker.celery_app worker --loglevel=info
+    startCommand: python app/worker_server.py
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -35,6 +35,7 @@ services:
           name: product-importer-redis
           type: redis
           property: connectionString
+    healthCheckPath: /
 
   # Redis private service
   - type: redis
