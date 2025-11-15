@@ -779,21 +779,85 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
     uploadBtn.disabled = true;
     
     try {
-        const formData = new FormData();
-        formData.append('file', file);
-        
-        const result = await fetch('/upload/csv', {
-            method: 'POST',
-            body: formData
+        // Step 1: Initialize upload and get Cloudinary credentials
+        statusDiv.textContent = 'Initializing upload...';
+        const initResult = await fetch('/upload/csv/init', {
+            method: 'POST'
         });
         
-        if (!result.ok) {
-            const errorData = await result.json().catch(() => ({ detail: `HTTP error! status: ${result.status}` }));
-            throw new Error(errorData.detail || `HTTP error! status: ${result.status}`);
+        if (!initResult.ok) {
+            const errorData = await initResult.json().catch(() => ({ detail: `HTTP error! status: ${initResult.status}` }));
+            throw new Error(errorData.detail || `HTTP error! status: ${initResult.status}`);
         }
         
-        const resultData = await result.json();
-        const jobId = resultData.job_id;
+        const initData = await initResult.json();
+        const jobId = initData.job_id;
+        const cloudinaryConfig = initData.cloudinary;
+        
+        let fileUrl = null;
+        
+        // Step 2: Upload to Cloudinary if configured, otherwise fallback to server upload
+        if (cloudinaryConfig) {
+            // Upload directly to Cloudinary (bypasses Vercel size limits)
+            statusDiv.textContent = 'Uploading to cloud...';
+            const cloudinaryFormData = new FormData();
+            cloudinaryFormData.append('file', file);
+            cloudinaryFormData.append('api_key', cloudinaryConfig.api_key);
+            cloudinaryFormData.append('timestamp', cloudinaryConfig.timestamp);
+            cloudinaryFormData.append('signature', cloudinaryConfig.signature);
+            cloudinaryFormData.append('folder', cloudinaryConfig.folder);
+            cloudinaryFormData.append('public_id', cloudinaryConfig.public_id);
+            cloudinaryFormData.append('resource_type', 'raw');
+            
+            const cloudinaryResult = await fetch(cloudinaryConfig.upload_url, {
+                method: 'POST',
+                body: cloudinaryFormData
+            });
+            
+            if (!cloudinaryResult.ok) {
+                const errorText = await cloudinaryResult.text();
+                throw new Error(`Cloudinary upload failed: ${errorText}`);
+            }
+            
+            const cloudinaryData = await cloudinaryResult.json();
+            fileUrl = cloudinaryData.secure_url || cloudinaryData.url;
+            
+            // Step 3: Notify backend that upload is complete
+            statusDiv.textContent = 'Finalizing upload...';
+            const completeResult = await fetch('/upload/csv/complete', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    job_id: jobId,
+                    file_url: fileUrl
+                })
+            });
+            
+            if (!completeResult.ok) {
+                const errorData = await completeResult.json().catch(() => ({ detail: `HTTP error! status: ${completeResult.status}` }));
+                throw new Error(errorData.detail || `HTTP error! status: ${completeResult.status}`);
+            }
+        } else {
+            // Fallback: Upload through server (will hit size limits on Vercel)
+            statusDiv.textContent = 'Uploading file...';
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            const result = await fetch('/upload/csv', {
+                method: 'POST',
+                body: formData
+            });
+            
+            if (!result.ok) {
+                const errorData = await result.json().catch(() => ({ detail: `HTTP error! status: ${result.status}` }));
+                throw new Error(errorData.detail || `HTTP error! status: ${result.status}`);
+            }
+            
+            const resultData = await result.json();
+            // jobId already set from init
+        }
         
         const eventSource = new EventSource(`/upload/progress/${jobId}`);
         

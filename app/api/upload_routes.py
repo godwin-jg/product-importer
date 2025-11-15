@@ -25,6 +25,127 @@ if settings.CLOUDINARY_CLOUD_NAME and settings.CLOUDINARY_API_KEY and settings.C
 router = APIRouter(prefix="/upload", tags=["upload"])
 
 
+@router.post("/csv/init")
+async def init_csv_upload():
+    """
+    Initialize a CSV upload by generating a job_id and Cloudinary upload signature.
+    This allows direct client-side upload to Cloudinary, bypassing Vercel's size limits.
+    """
+    import hashlib
+    import time
+    
+    # Generate unique job_id
+    job_id = uuid.uuid4()
+    
+    # Initialize job status in Redis
+    try:
+        import redis
+        client = redis.from_url(
+            settings.REDIS_URL,
+            ssl_cert_reqs=ssl.CERT_NONE if "rediss" in settings.REDIS_URL else None
+        )
+        client.set(f"job:{job_id}", json.dumps({
+            "status": "uploading",
+            "message": "Waiting for file upload...",
+            "progress": 0
+        }))
+        client.close()
+    except Exception:
+        pass
+    
+    # If Cloudinary is configured, generate upload signature for direct client upload
+    if settings.CLOUDINARY_CLOUD_NAME and settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET:
+        try:
+            # Generate Cloudinary upload signature
+            timestamp = int(time.time())
+            public_id = f"csv_imports/{job_id}"
+            
+            # Create signature string (parameters sorted alphabetically, then append secret)
+            params = {
+                'folder': 'csv_imports',
+                'public_id': public_id,
+                'timestamp': str(timestamp)
+            }
+            # Sort parameters and create signature string
+            param_string = '&'.join([f"{k}={v}" for k, v in sorted(params.items())])
+            signature_string = param_string + settings.CLOUDINARY_API_SECRET
+            signature = hashlib.sha1(signature_string.encode('utf-8')).hexdigest()
+            
+            return {
+                "job_id": str(job_id),
+                "cloudinary": {
+                    "cloud_name": settings.CLOUDINARY_CLOUD_NAME,
+                    "api_key": settings.CLOUDINARY_API_KEY,
+                    "timestamp": timestamp,
+                    "signature": signature,
+                    "folder": "csv_imports",
+                    "public_id": public_id,
+                    "upload_url": f"https://api.cloudinary.com/v1_1/{settings.CLOUDINARY_CLOUD_NAME}/raw/upload"
+                }
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to initialize upload: {str(e)}")
+    else:
+        # Fallback: return job_id for server-side upload (will hit size limits on Vercel)
+        return {
+            "job_id": str(job_id),
+            "cloudinary": None
+        }
+
+
+@router.post("/csv/complete")
+async def complete_csv_upload(job_id: str, file_url: str):
+    """
+    Complete the CSV upload process after file has been uploaded to Cloudinary.
+    This endpoint is called after the client successfully uploads to Cloudinary.
+    """
+    # Validate job exists
+    try:
+        import redis
+        client = redis.from_url(
+            settings.REDIS_URL,
+            ssl_cert_reqs=ssl.CERT_NONE if "rediss" in settings.REDIS_URL else None
+        )
+        job_data = client.get(f"job:{job_id}")
+        if not job_data:
+            raise HTTPException(status_code=404, detail="Job not found")
+        client.close()
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
+        pass
+    
+    # Update status
+    try:
+        import redis
+        client = redis.from_url(
+            settings.REDIS_URL,
+            ssl_cert_reqs=ssl.CERT_NONE if "rediss" in settings.REDIS_URL else None
+        )
+        client.set(f"job:{job_id}", json.dumps({
+            "status": "queued",
+            "message": "File uploaded to cloud, queuing for processing...",
+            "progress": 0
+        }))
+        client.close()
+    except Exception:
+        pass
+    
+    # Start processing
+    try:
+        from app.services.importer import process_csv_import
+        process_csv_import.delay(file_url, job_id, use_cloudinary=True)
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="Import task not available. Please ensure the task is defined."
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to queue task: {str(e)}")
+    
+    return {"job_id": job_id, "message": "File uploaded and processing started"}
+
+
 @router.post("/csv")
 async def upload_csv(file: UploadFile = File(...)):
     """Upload a CSV file for processing."""
